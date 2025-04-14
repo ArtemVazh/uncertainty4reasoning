@@ -1,0 +1,34 @@
+<|im_start|>system
+Please reason step by step, and put your final answer within \boxed{{}}.<|im_end|>
+<|im_start|>user
+At 30, Anika is 4/3 the age of Maddie. What would be their average age in 15 years?
+<|im_end|>
+<|im_start|>assistant
+If Anika is 30 now, in 15 years, she'll be 30+15=<<30+15=45>>45 years old.
+At 30, Anika is 4/3 the age of Maddie, meaning Maddie is 4/3*30=<<4/3*30=40>>40 years.
+In 15 years, Maddie will be 40+15=<<40+15=55>>55 years old.
+Their total age in 15 years will be 55+45=<<55+45=100>>100
+Their average age in 15 years will be 100/2=<<100/2=50>>50
+Answer: \boxed{{50}}
+<|im_end|>
+<|im_start|>user
+Janet, a third grade teacher, is picking up the sack lunch order from a local deli for the field trip she is taking her class on. There are 35 children in her class, 5 volunteer chaperones, and herself. She she also ordered three additional sack lunches, just in case there was a problem. Each sack lunch costs $7. How much do all the lunches cost in total?
+<|im_end|>
+<|im_start|>assistant
+Janet needs 35 lunches for the kids + 5 for the chaperones + 1 for herself + 3 extras = <<35+5+1+3=44>>44 lunches.
+Each lunch is $7, so lunch for the field trip costs $7 per lunch * 44 lunches = $<<7*44=308>>308 total
+Answer: \boxed{{308}}
+<|im_end|>
+<|im_start|>user
+Colin can skip at six times the speed that Brandon can.  Brandon can skip at one-third the speed that Tony can.  And Tony can skip at twice the speed that Bruce can.  At what speed, in miles per hour, can Colin skip if Bruce skips at 1 mile per hour?
+<|im_end|>
+<|im_start|>assistant
+Tony can skip at twice the speed that Bruce can, for a speed of 1*2=<<1*2=2>>2 miles per hour.
+Brandon can skip at one-third the speed that Tony can, for a speed of 2*(1/3) = 2/3 miles per hour.
+Colin can skip at six times the speed that Brandon can, for a speed of (2/3*6=4 miles per hour).
+Answer: \boxed{{4}}
+<|im_end|>
+<|im_start|>user
+{q}
+<|im_end|>
+<|im_start|>assistant

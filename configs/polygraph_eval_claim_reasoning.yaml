@@ -1,0 +1,97 @@
+hydra:
+  run:
+    dir: ${cache_path}/${task}/${model.path}/${dataset}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+model:
+  type: CausalLM
+  path_to_load_script: ../reasoning/load_qwen.py
+  path: Qwen/Qwen2.5-Math-7B
+  load_model_args:
+    device_map: auto
+  load_tokenizer_args: {}
+
+task: bio
+dataset: ['rediska0123/test_gsm8k_Qwen2.5-Math-7B']
+text_column: question
+label_column: answer
+eval_split: train
+load_from_disk: false
+subsample_eval_dataset: -1
+use_claim_ue: true
+
+generation_metrics: [{
+  'name': 'StepFactCheck',
+  'kwargs': {'model': 'deepseek-reasoner', 'n_threads': 16}
+}]
+
+estimators:
+  - name: RandomBaselineClaim
+  - name: MaximumClaimProbability
+  - name: ClaimConditionedProbabilityClaim
+    cfg:
+      nli_context: "fact_pref"
+  - name: MaxTokenEntropyClaim
+  - name: PerplexityClaim
+  - name: luh.builder_LuhClaimEstimatorDummy
+
+stat_calculators:
+  - auto
+  - name: ClaimExtractor
+    builder: synthetic_dataset_generation.steps_extractor
+    cfg:
+    stats:
+      - "claims"
+      - "claim_texts_concatenated"
+      - "claim_input_texts_concatenated"
+    dependencies:
+      - "greedy_texts"
+      - "greedy_tokens"
+  - name: Luh
+    builder: luh.builder_CalculatorInferLuh
+    cfg:
+      predict_token_uncertainties: false
+      uq_head_path: "rediska0123/uhead_Qwen2.5-Math-7B_first500"
+      args_generate:
+        max_new_tokens: 256
+        min_new_tokens: 2
+        temperature: 0.
+        do_sample: false
+        repetition_penalty: 1.
+        diversity_penalty: 0.
+        length_penalty: 1.
+        stop_strings: ["\n\n", "}\n"]
+
+      generations_cache_dir: ""
+    dependencies:
+    stats:
+      - "input_texts"
+      - "input_tokens"
+      - "hidden_states"
+      - "greedy_log_probs"
+      - "greedy_logits"
+      - "greedy_tokens"
+      - "greedy_texts"
+      - "greedy_log_likelihoods"
+      - "greedy_tokens_alternatives"
+      - "uhead_features"
+  - name: luh_claim
+    builder: luh.builder_CalculatorApplyUQHead
+    cfg:
+    dependencies:
+      - "claims"
+      - "uhead_features"
+    stats:
+      - "uncertainty_claim_logits"
+
+max_new_tokens: 256
+ignore_exceptions: false
+language: en
+batch_size: 1
+seed:
+    - 1
+cache_path: ./workdir/cache
+save_path: '${hydra:run.dir}'
+report_to_wandb: true
+
+n_threads: 16
+log_time: true
