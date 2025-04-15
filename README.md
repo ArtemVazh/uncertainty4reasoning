@@ -4,6 +4,7 @@ Before usage: paste your deekseek API key in `configs/deepseek_api_key.txt`.
 
 Already generated datasets:
 - `rediska0123/train_gsm8k_Qwen2.5-Math-7B`
+- `rediska0123/train_gsm8k_Qwen2.5-Math-1.5B`
 - `rediska0123/test_gsm8k`
 
 Example commands to generate new datasets:
