@@ -33,7 +33,7 @@ class FeatureExtractorTokenProbabilities(FeatureExtractorBase):
         :return: Token-level probabilities (sequence_length x vocab_size).
         """
         mask = logits.sum(dim=-1) != 0.
-        top_probas = torch.zeros(*logits.shape[:-1], self.top_n, device=logits.device)
+        top_probas = torch.zeros(*logits.shape[:-1], self.top_n, device=logits.device, dtype=torch.float32)
 
         def get_top_n_probas(inpt_logits):
             res_p = F.softmax(inpt_logits / self.temperature, dim=-1)
