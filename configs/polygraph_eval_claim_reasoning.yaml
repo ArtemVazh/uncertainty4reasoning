@@ -11,7 +11,7 @@ model:
   load_tokenizer_args: {}
 
 task: bio
-dataset: ['rediska0123/test_gsm8k_Qwen2.5-Math-7B']
+dataset: ['rediska0123/test_gsm8k']
 text_column: question
 label_column: answer
 eval_split: train
@@ -37,7 +37,7 @@ estimators:
 stat_calculators:
   - auto
   - name: ClaimExtractor
-    builder: synthetic_dataset_generation.steps_extractor
+    builder: synthetic_dataset_generation.utils.steps_extractor
     cfg:
     stats:
       - "claims"
@@ -50,7 +50,7 @@ stat_calculators:
     builder: luh.builder_CalculatorInferLuh
     cfg:
       predict_token_uncertainties: false
-      uq_head_path: "rediska0123/uhead_Qwen2.5-Math-7B_first500"
+      uq_head_path: "rediska0123/uhead_Qwen2.5-Math-7B"
       args_generate:
         max_new_tokens: 256
         min_new_tokens: 2

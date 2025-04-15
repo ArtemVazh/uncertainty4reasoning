@@ -16,7 +16,6 @@ from lm_polygraph.utils.dataset import Dataset
 from lm_polygraph.utils.model import WhiteboxModel, BlackboxModel
 from lm_polygraph.utils.processor import Logger
 from lm_polygraph.generation_metrics import *
-from lm_polygraph.estimators import *
 from lm_polygraph.ue_metrics import *
 from lm_polygraph.utils.common import load_external_module
 from lm_polygraph.utils.generation_parameters import GenerationParameters
@@ -28,8 +27,7 @@ from lm_polygraph.utils.builder_enviroment_stat_calculator import (
 )
 from lm_polygraph.utils.factory_estimator import FactoryEstimator
 from lm_polygraph.utils.factory_stat_calculator import StatCalculatorContainer
-from synthetic_dataset_generation.step_fact_check import StepFactCheck
-
+from synthetic_dataset_generation.utils.step_fact_check import StepFactCheck
 
 hydra_config = Path(os.environ.get("HYDRA_CONFIG", ""))
 
@@ -142,9 +140,10 @@ def main(args):
             man.state = "failed"
             raise e
         finally:
-            man_save = save_path + f"/ue_manager_seed{seed}"
-            print(f'UEManager saved at {man_save}')
-            man.save(man_save)
+            print(f'UEManager saved at {save_path}')
+            man.save(save_path)
+            if hasattr(args, "hf_save_path"):
+                man.push_to_hub(args.hf_save_path)
 
         if hasattr(args, "report_to_wandb") and args.report_to_wandb:
             wandb.log({str(k) : v for k, v in man.gen_metrics})

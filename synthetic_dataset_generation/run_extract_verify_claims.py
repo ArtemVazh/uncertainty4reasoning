@@ -4,8 +4,8 @@ import argparse
 from datasets import load_from_disk, Dataset
 from transformers import AutoTokenizer
 from argparse import Namespace
-from synthetic_dataset_generation.steps_extractor import StepsExtractor
-from synthetic_dataset_generation.step_fact_check import StepFactCheck
+from synthetic_dataset_generation.utils.steps_extractor import StepsExtractor
+from synthetic_dataset_generation.utils.step_fact_check import StepFactCheck
 
 
 def get_question(dataset, i, prompt):
@@ -41,11 +41,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate annotated synthetic dataset.")
     parser.add_argument("--dataset-path", type=str, required=True, help="Path to load dataset from.")
     parser.add_argument("--model-path", type=str, required=True, help="Model path for tokenizer.")
-    parser.add_argument("--hf-cache", type=str, required=True, help="Cache directory for HuggingFace models.")
     parser.add_argument("--prompt-file", type=str, required=True, help="Path to the prompt file.")
-    parser.add_argument("--api-key-file", type=str, required=True, help="Path to file containing OpenAI API key.")
     parser.add_argument("--save-path", type=str, required=True, help="Path to save the annotated dataset.")
-    parser.add_argument("--hub-repo", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
+    parser.add_argument("--hf-cache", type=str, default=None, help="Cache directory for HuggingFace models.")
+    parser.add_argument("--api-key-file", type=str, default="configs/deepseek_api_key.txt",
+                        help="Path to file containing OpenAI API key.")
+    parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
     return parser.parse_args()
 
@@ -87,10 +88,11 @@ def main():
     anno_dataset.save_to_disk(args.save_path)
     print("Done.")
 
-    if args.hub_repo is not None:
-        anno_dataset.push_to_hub(args.hub_repo)
+    if args.hf_save_path is not None:
+        anno_dataset.push_to_hub(args.hf_save_path)
 
     print_stats(anno_dataset)
+
 
 def print_stats(anno_dataset):
     all_ue = []

@@ -4,10 +4,13 @@ import numpy as np
 import torch
 import sys
 import gc
+import os
+import tempfile
 
 from collections import defaultdict
 from typing import List, Set, Dict, Tuple
 from tqdm import tqdm
+from pathlib import Path
 
 from lm_polygraph.utils.dataset import Dataset
 from lm_polygraph.utils.model import BlackboxModel, Model
@@ -31,6 +34,7 @@ from lm_polygraph.defaults.register_default_stat_calculators import (
     register_default_stat_calculators,
 )
 from lm_polygraph.utils.common import flatten_results
+from huggingface_hub import HfApi, Repository
 
 import logging
 
@@ -59,9 +63,9 @@ def _delete_nans(ue, metric):
 
 
 def order_calculators(
-    stats: List[str],
-    stat_calculators: Dict[str, StatCalculator],
-    stat_dependencies: Dict[str, List[str]],
+        stats: List[str],
+        stat_calculators: Dict[str, StatCalculator],
+        stat_dependencies: Dict[str, List[str]],
 ) -> Tuple[List[str], Set[str]]:
     ordered: List[str] = []
     have_stats: Set[str] = set()
@@ -123,19 +127,19 @@ class UEManager:
     """
 
     def __init__(
-        self,
-        data: Dataset,
-        model: Model,
-        estimators: List[Estimator],
-        builder_env_stat_calc: BuilderEnvironmentStatCalculator,
-        available_stat_calculators: List[StatCalculatorContainer],
-        generation_metrics: List[GenerationMetric],
-        ue_metrics: List[UEMetric],
-        processors: List[Processor],
-        ignore_exceptions: bool = True,
-        verbose: bool = True,
-        max_new_tokens: int = 100,
-        log_time: bool = False,
+            self,
+            data: Dataset,
+            model: Model,
+            estimators: List[Estimator],
+            builder_env_stat_calc: BuilderEnvironmentStatCalculator,
+            available_stat_calculators: List[StatCalculatorContainer],
+            generation_metrics: List[GenerationMetric],
+            ue_metrics: List[UEMetric],
+            processors: List[Processor],
+            ignore_exceptions: bool = True,
+            verbose: bool = True,
+            max_new_tokens: int = 100,
+            log_time: bool = False,
     ):
         """
         Parameters:
@@ -203,9 +207,9 @@ class UEManager:
             greedy += ["greedy_tokens"]
 
         stats = (
-            [s for e in self.estimators for s in e.stats_dependencies]
-            + [s for m in self.generation_metrics for s in m.stats_dependencies]
-            + greedy
+                [s for e in self.estimators for s in e.stats_dependencies]
+                + [s for m in self.generation_metrics for s in m.stats_dependencies]
+                + greedy
         )
 
         stats, have_stats = order_calculators(
@@ -219,11 +223,12 @@ class UEManager:
             s
             for s in stats
             if not (str(s).startswith("ensemble_"))
-            and not (
+               and not (
                 (
-                    str(s).startswith("blackbox_")
-                    and s[len("blackbox_") :] in have_stats
-                )  # remove blackbox_X from stats only if X is already in stats to remove duplicated run of stat calculator
+                        str(s).startswith("blackbox_")
+                        and s[len("blackbox_"):] in have_stats
+                )
+                # remove blackbox_X from stats only if X is already in stats to remove duplicated run of stat calculator
             )
         ]  # below in calculate() we copy X in blackbox_X
 
@@ -263,7 +268,7 @@ class UEManager:
                         continue
                     batch_stats[stat] = stat_value
                     if (f"blackbox_{stat}" in self.stat_calculators_dict.keys()) and (
-                        f"blackbox_{stat}" in self.stats_names
+                            f"blackbox_{stat}" in self.stats_names
                     ):
                         batch_stats[f"blackbox_{stat}"] = stat_value
             except Exception as e:
@@ -280,7 +285,7 @@ class UEManager:
         return batch_stats
 
     def estimate(
-        self, batch_stats: dict, estimators: list
+            self, batch_stats: dict, estimators: list
     ) -> Dict[Tuple[str, str], List[float]]:
         """
         Runs stat calculators and handles errors if any occur. Returns updated batch stats
@@ -370,7 +375,7 @@ class UEManager:
         iterable_data = tqdm(self.data) if self.verbose else self.data
 
         def fn_on_batch_callback(
-            batch_i, target_texts, batch_stats, batch_estimations, bad_estimators
+                batch_i, target_texts, batch_stats, batch_estimations, bad_estimators
         ):
             for bad_estimator in bad_estimators:
                 key = (bad_estimator.level, str(bad_estimator))
@@ -457,13 +462,8 @@ class UEManager:
         return self.metrics
 
     def save(self, save_path: str):
-        """
-        Saves the run results in the provided path.
-        To load the saved manager, see UEManager.load().
-
-        Parameters:
-            save_path (str): Path to file to save benchmark results to.
-        """
+        save_path = Path(save_path)
+        save_path.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
                 "state": self.state,
@@ -472,14 +472,28 @@ class UEManager:
                 "estimations": self.estimations,
                 "stats": self.stats,
             },
-            save_path,
+            Path(save_path) / "ue_manager.pth",
         )
+
+    def push_to_hub(self, repo_id: str | None = None, token: str | None = None):
+        api = HfApi()
+        api.create_repo(repo_id=repo_id, exist_ok=True, token=token)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            repo = Repository(local_dir=str(tmp_path), clone_from=repo_id, use_auth_token=token)
+            output_dir = tmp_path
+            self.save(output_dir)
+            repo.git_add(auto_lfs_track=True)
+            repo.git_commit("Upload UncertaintyHead model and config")
+            repo.git_push()
+        log.info(f"Model pushed to Hugging Face Hub: https://huggingface.co/{repo_id}")
 
     @staticmethod
     def load(
-        load_path: str,
-        builder_env_stat_calc: BuilderEnvironmentStatCalculator = None,
-        available_stat_calculators: List[StatCalculatorContainer] = None,
+            load_path: str,
+            builder_env_stat_calc: BuilderEnvironmentStatCalculator = None,
+            available_stat_calculators: List[StatCalculatorContainer] = None,
     ) -> "UEManager":
         """
         Loads UEManager from the specified path. To save the calculated manager results, see UEManager.save().

@@ -1,6 +1,6 @@
 from lm_polygraph.generation_metrics.openai_fact_check import *
 from lm_polygraph.stat_calculators.extract_claims import *
-from synthetic_dataset_generation.deepseek_chat import DeepSeekChat
+from synthetic_dataset_generation.utils.deepseek_chat import (DeepSeekChat)
 
 
 class StepFactCheck:
@@ -67,10 +67,15 @@ Now, please output only the indices of all incorrect steps found, separated by c
     def parse_reply(self, reply: str) -> list[int]:
         if 'all steps are correct' in reply.lower():
             return []
+        orig_reply = reply
         reply = reply.strip().replace(' ', '').replace('Step', '')
         if reply.startswith('[') and reply.endswith(']'):
             reply = reply[1:-1]
-        return [int(x) - 1 for x in reply.split(',')]
+        try:
+            return [int(x) - 1 for x in reply.split(',')]
+        except Exception as e:
+            log.warning('Skipping text, because could not parse DeepSeek reply: {}'.format(orig_reply))
+            return None
 
     def _score_single(self, args: tuple[list, str, str]) -> list:
         claims, input_text, answer = args
@@ -79,6 +84,8 @@ Now, please output only the indices of all incorrect steps found, separated by c
         q2 = self.prompt2(input_text, claims, answer, reply)
         reply = self.chat.ask(q2)
         wrong_claim_ids: list[int] = self.parse_reply(reply)
+        if wrong_claim_ids is None:
+            return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
         return [(1 if i in wrong_claim_ids else 0) for i in range(len(claims))]
 
     def __call__(

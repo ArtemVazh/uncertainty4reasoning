@@ -23,6 +23,8 @@ class DeepSeekChat:
         self.api_base = api_base
         self.model = model
 
+        if cache_path is None:
+            cache_path = '~/.cache'
         self.cache_path = os.path.join(cache_path, "deepseek_chat_cache.diskcache")
         if not os.path.exists(cache_path):
             os.makedirs(cache_path)
@@ -35,10 +37,11 @@ class DeepSeekChat:
         cache_settings["cull_limit"] = 0
         responses = dc.Cache(self.cache_path, **cache_settings)
 
+        reply = ''
         if (self.model, message) in responses:
             reply = responses[(self.model, message)]
 
-        else:
+        if reply == '':
             if self.api_key is None:
                 raise Exception("Cant ask DeepSeek without token.")
             messages = [

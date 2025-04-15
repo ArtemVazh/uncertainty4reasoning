@@ -60,28 +60,39 @@ def print_stats(dataset):
     print('Finished:', np.mean(finished))
 
 
+def parse_tuple(s):
+    try:
+        parts = s.strip("()").split(",")
+        return tuple(part.strip() for part in parts)
+    except Exception:
+        raise argparse.ArgumentTypeError("Tuple must be in the form: value1,value2")
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate math model on GSM8K dataset.")
-    parser.add_argument('--dataset-path', type=str, default=("openai/gsm8k", "main"), help='Path to the dataset')
+    parser = argparse.ArgumentParser(description="Create generation texts for model.")
+    parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
+                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main"')
+    parser.add_argument('--dataset-split', type=parse_tuple, default="test", help='Dataset split')
+    parser.add_argument('--n-samples', type=int, required=True, help='Number of samples to evaluate from the dataset')
     parser.add_argument('--model-path', type=str, required=True, help='Path to the pretrained model')
-    parser.add_argument('--hf-cache', type=str, required=True, help='Path to the HuggingFace cache directory')
     parser.add_argument('--prompt-file', type=str, required=True, help='Path to the prompt text file')
     parser.add_argument('--save-path', type=str, required=True, help='Path to save the processed dataset')
-    parser.add_argument('--num-samples', type=int, required=True, help='Number of samples to evaluate from the dataset')
+    parser.add_argument('--hf-cache', type=str, default=None, help='Path to the HuggingFace cache directory')
+    parser.add_argument('--device', type=str, default="auto", help='Device to infer model on')
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_path, device_map='cuda', trust_remote_code=True, cache_dir=args.hf_cache)
+        args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
     generation_config = GenerationConfig.from_pretrained(args.model_path)
 
     prompt = open(args.prompt_file, 'r').read()
 
     dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)['test']
-    dataset = dataset.select(range(args.num_samples))
+    dataset = dataset.select(range(args.n_samples))
     dataset = dataset.map(partial(generate_replies, prompt=prompt))
     print_stats(dataset)
 

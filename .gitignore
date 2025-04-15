@@ -174,3 +174,6 @@ cython_debug/
 .pypirc
 
 configs/deepseek_api_key.txt
+
+runs.sh
+configs/scores_*.json
