@@ -6,9 +6,9 @@ Already generated datasets:
 - `rediska0123/train_gsm8k_Qwen2.5-Math-7B`
 - `rediska0123/test_gsm8k`
 
-Example commands to train new datasets:
+Example commands to generate new datasets:
 
-#### Training dataset creation
+#### Train dataset creation
 
 1. Generate annotation dataset (on GPU). Runs for ~30 mins.
 ```bash
@@ -35,7 +35,7 @@ python -m synthetic_dataset_generation.run_extract_verify_claims \
 
 Resulting train dataset is saved at `rediska0123/train_gsm8k_Qwen2.5-Math-7B`.
 
-#### Testing dataset
+#### Test dataset
 Apply prompt to create test dataset (model-agnostic, just prompts). No GPU required. Runs super fast.
 ```bash
 python -m synthetic_dataset_generation.run_create_test_dataset \
