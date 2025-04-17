@@ -13,8 +13,8 @@ def main(args):
     # Format questions and extract answers
     questions, answers = [], []
     for inst in dataset:
-        questions.append(prompt_template.format(q=inst["question"]))
-        answers.append(inst["answer"])
+        questions.append(prompt_template.format(q=inst[args.question_col]))
+        answers.append(inst[args.answer_col])
 
     # Create and save new dataset
     ds = Dataset.from_dict({'question': questions, 'answer': answers})
@@ -37,6 +37,8 @@ if __name__ == '__main__':
     parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
                         help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main')
     parser.add_argument('--dataset-split', type=str, default='test', help='Dataset split to load')
+    parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
+    parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--start-index', type=int, required=True, help='Start index for slicing dataset')
     parser.add_argument('--save-path', type=str, required=True, help='Directory to save the processed dataset')
     parser.add_argument('--prompt-file', type=str, default='configs/gsm8k_3shot_prompt.txt',
