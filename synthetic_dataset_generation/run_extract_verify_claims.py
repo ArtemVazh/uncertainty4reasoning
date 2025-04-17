@@ -37,23 +37,7 @@ def generate_targets(dataset, reply_tokens_all):
     return targets
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Generate annotated synthetic dataset.")
-    parser.add_argument("--dataset-path", type=str, required=True, help="Path to load dataset from.")
-    parser.add_argument("--model-path", type=str, required=True, help="Model path for tokenizer.")
-    parser.add_argument("--prompt-file", type=str, required=True, help="Path to the prompt file.")
-    parser.add_argument("--save-path", type=str, required=True, help="Path to save the annotated dataset.")
-    parser.add_argument("--hf-cache", type=str, default=None, help="Cache directory for HuggingFace models.")
-    parser.add_argument("--api-key-file", type=str, default="configs/deepseek_api_key.txt",
-                        help="Path to file containing OpenAI API key.")
-    parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
-    parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-
+def main(args):
     dataset = load_from_disk(args.dataset_path)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
     prompt = open(args.prompt_file, 'r').read()
@@ -105,4 +89,16 @@ def print_stats(anno_dataset):
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description="Generate annotated synthetic dataset.")
+    parser.add_argument("--dataset-path", type=str, required=True, help="Path to load dataset from.")
+    parser.add_argument("--model-path", type=str, required=True, help="Model path for tokenizer.")
+    parser.add_argument("--prompt-file", type=str, required=True, help="Path to the prompt file.")
+    parser.add_argument("--save-path", type=str, required=True, help="Path to save the annotated dataset.")
+    parser.add_argument("--hf-cache", type=str, default=None, help="Cache directory for HuggingFace models.")
+    parser.add_argument("--api-key-file", type=str, default="configs/deepseek_api_key.txt",
+                        help="Path to file containing OpenAI API key.")
+    parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
+    parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
+
+    args = parser.parse_args()
+    main(args)
