@@ -26,7 +26,7 @@ def parse_ans(s):
     return None
 
 
-def generate_replies(inst, prompt, args):
+def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
     inst["question"] = inst[args.question_col]
     inst["answer"] = inst[args.answer_col]
     question = prompt.format(q=inst["question"])
@@ -108,8 +108,7 @@ def parse_args():
     return parser.parse_args()
 
 
-if __name__ == "__main__":
-    args = parse_args()
+def main(args):
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
@@ -119,8 +118,17 @@ if __name__ == "__main__":
 
     dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)['test']
     dataset = dataset.select(range(args.n_samples))
-    dataset = dataset.map(partial(generate_replies, prompt=prompt, args=args))
+    dataset = dataset.map(partial(
+        generate_replies, prompt=prompt, args=args,
+        model=model, tokenizer=tokenizer,
+        generation_config=generation_config,
+    ))
     print_stats(dataset, args)
 
     dataset.save_to_disk(args.save_path)
     print("Done.")
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    main(args)
