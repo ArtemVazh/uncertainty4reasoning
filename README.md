@@ -51,6 +51,7 @@ Resulting test dataset is saved at `rediska0123/test_gsm8k`.
 
 Already trained models:
 - `rediska0123/uhead_Qwen2.5-Math-7B`
+- `rediska0123/uhead_Qwen2.5-Math-1.5B`
 
 Example commands to train new model: TODO
 
@@ -62,7 +63,7 @@ Example to test your UHead along with other UE baselines (MaxProb, Perplexity, E
 ```bash
 PYTHONPATH=./ \
 WANDB_PROJECT=YOUR_WANDB_PROJECT \
-DEEPSEEK_API_KEY=$(configs/deepseek_api_key.txt) \
+DEEPSEEK_API_KEY=$(<configs/deepseek_api_key.txt) \
 HYDRA_CONFIG=configs/polygraph_eval_claim_reasoning.yaml \
     python eval_uhead.py \
     model.path=Qwen/Qwen2.5-Math-7B \

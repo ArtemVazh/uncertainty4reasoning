@@ -4,7 +4,7 @@ hydra:
 
 model:
   type: CausalLM
-  path_to_load_script: ../reasoning/load_qwen.py
+  path_to_load_script: ./load_qwen.py
   path: Qwen/Qwen2.5-Math-7B
   load_model_args:
     device_map: auto
@@ -21,7 +21,7 @@ use_claim_ue: true
 
 generation_metrics: [{
   'name': 'StepFactCheck',
-  'kwargs': {'model': 'deepseek-reasoner', 'n_threads': 16}
+  'kwargs': {'model': 'deepseek-reasoner', 'n_threads': 16, 'progress_bar': false}
 }]
 
 estimators:

@@ -3,16 +3,17 @@ from lm_polygraph.stat_calculators.extract_claims import *
 from synthetic_dataset_generation.utils.deepseek_chat import (DeepSeekChat)
 
 
-class StepFactCheck:
+class StepFactCheck(GenerationMetric):
     def __init__(
             self,
-            cache_path: str,
+            cache_path: str = "~/.cache",
             model: str = 'deepseek-reasoner',
             api_key: str | None = None,
             progress_bar: bool = True,
             n_threads: int = 1,
             wait_times: tuple = (5, 10, 30, 60, 120),
     ):
+        super().__init__(["input_texts", "claims"], "claim")
         self.chat = DeepSeekChat(cache_path, model=model, api_key=api_key, wait_times=wait_times)
 
         # use this for OpenAI
@@ -64,7 +65,7 @@ Step-by-step assessment:
 Now, please output only the indices of all incorrect steps found, separated by commas. If all steps are correct, output "All steps are correct."'''.format(
             problem=problem, steps=steps, reply=reply)
 
-    def parse_reply(self, reply: str) -> list[int]:
+    def parse_reply(self, reply: str) -> list[int] | None:
         if 'all steps are correct' in reply.lower():
             return []
         orig_reply = reply
@@ -83,7 +84,7 @@ Now, please output only the indices of all incorrect steps found, separated by c
         reply = self.chat.ask(q1)
         q2 = self.prompt2(input_text, claims, answer, reply)
         reply = self.chat.ask(q2)
-        wrong_claim_ids: list[int] = self.parse_reply(reply)
+        wrong_claim_ids: list[int] | None = self.parse_reply(reply)
         if wrong_claim_ids is None:
             return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
         return [(1 if i in wrong_claim_ids else 0) for i in range(len(claims))]
@@ -95,9 +96,12 @@ Now, please output only the indices of all incorrect steps found, separated by c
     ) -> list:
         input_texts = stats["input_texts"]
 
+        if "answers" in stats.keys():
+            target_texts = stats["answers"]
+
         all_inputs = [
             (claims, input_text, answer)
-            for input_text, claims, answer in zip(input_texts, stats["claims"], stats["answers"])
+            for input_text, claims, answer in zip(input_texts, stats["claims"], target_texts)
         ]
 
         with ThreadPoolExecutor(max_workers=self.n_threads) as executor:

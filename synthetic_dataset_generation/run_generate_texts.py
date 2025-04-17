@@ -1,12 +1,17 @@
 import torch
 import argparse
 import numpy as np
+import nltk
+from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from datasets import load_dataset
 from functools import partial
+from collections import defaultdict
+from nltk.translate.bleu_score import sentence_bleu
+from rouge_score import rouge_scorer
 
 
-def parse_ans(s, ignore_unfinished=False):
+def parse_ans(s):
     if '####' in s:
         return float(s.split('####')[-1].replace(',', ''))
     if r'\boxed{' in s:
@@ -18,12 +23,12 @@ def parse_ans(s, ignore_unfinished=False):
             return float(x)
         except:
             return None
-    if not ignore_unfinished:
-        print(f'Couldnt parse answer from:\n{s}')
     return None
 
 
-def generate_replies(inst, prompt):
+def generate_replies(inst, prompt, args):
+    inst["question"] = inst[args.question_col]
+    inst["answer"] = inst[args.answer_col]
     question = prompt.format(q=inst["question"])
     inputs = tokenizer(question, return_tensors='pt')['input_ids']
     inputs = inputs.to(model.device)
@@ -48,16 +53,30 @@ def generate_replies(inst, prompt):
     return inst
 
 
-def print_stats(dataset):
-    accuracies = []
-    finished = []
+def jaccard_similarity(a, b):
+    a_set = set(a.lower().split())
+    b_set = set(b.lower().split())
+    intersection = a_set.intersection(b_set)
+    union = a_set.union(b_set)
+    return len(intersection) / len(union) if union else 0.0
+
+
+def print_stats(dataset, args):
+    stats = defaultdict(list)
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
     for a, d in zip(dataset['answer'], dataset['reply']):
-        gt_ans = parse_ans(a, True)
-        llm_ans = parse_ans(d, True)
-        accuracies.append(gt_ans == llm_ans if llm_ans is not None else 0)
-        finished.append(llm_ans is not None)
-    print('Accuracy:', np.mean(accuracies))
-    print('Finished:', np.mean(finished))
+        if args.final_answers:
+            gt_ans = parse_ans(a)
+            llm_ans = parse_ans(d)
+            stats['Accuracy'].append(gt_ans == llm_ans if llm_ans is not None else 0)
+            stats['Finished'].append(llm_ans is not None)
+        else:
+            stats['BLEU'].append(sentence_bleu([a.split()], d.split()))
+            for key, val in scorer.score(a, d).items():
+                stats[f'{key[0].upper() + key[1:]}'].append(val.fmeasure)
+            stats['Jaccard'].append(jaccard_similarity(a, d))
+    for key, vals in stats.items():
+        print(f'{key}: {np.mean(vals)}')
 
 
 def parse_tuple(s):
@@ -70,15 +89,22 @@ def parse_tuple(s):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Create generation texts for model.")
+
     parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
                         help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main"')
     parser.add_argument('--dataset-split', type=parse_tuple, default="test", help='Dataset split')
+    parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
+    parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
+    parser.add_argument('--final-answers', action=argparse.BooleanOptionalAction, default=True,
+                        help='Whether dataset contains final answers for each problem')
     parser.add_argument('--n-samples', type=int, required=True, help='Number of samples to evaluate from the dataset')
-    parser.add_argument('--model-path', type=str, required=True, help='Path to the pretrained model')
     parser.add_argument('--prompt-file', type=str, required=True, help='Path to the prompt text file')
+
+    parser.add_argument('--model-path', type=str, required=True, help='Path to the pretrained model')
+    parser.add_argument('--device', type=str, default="auto", help='Device to infer model on')
+
     parser.add_argument('--save-path', type=str, required=True, help='Path to save the processed dataset')
     parser.add_argument('--hf-cache', type=str, default=None, help='Path to the HuggingFace cache directory')
-    parser.add_argument('--device', type=str, default="auto", help='Device to infer model on')
     return parser.parse_args()
 
 
@@ -93,8 +119,8 @@ if __name__ == "__main__":
 
     dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)['test']
     dataset = dataset.select(range(args.n_samples))
-    dataset = dataset.map(partial(generate_replies, prompt=prompt))
-    print_stats(dataset)
+    dataset = dataset.map(partial(generate_replies, prompt=prompt, args=args))
+    print_stats(dataset, args)
 
     dataset.save_to_disk(args.save_path)
     print("Done.")

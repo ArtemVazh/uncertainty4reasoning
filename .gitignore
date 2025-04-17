@@ -175,5 +175,5 @@ cython_debug/
 
 configs/deepseek_api_key.txt
 
-runs.sh
+runs/
 configs/scores_*.json

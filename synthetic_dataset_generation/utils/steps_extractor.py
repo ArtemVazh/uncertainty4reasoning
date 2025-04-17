@@ -1,14 +1,29 @@
 from lm_polygraph.stat_calculators.extract_claims import *
 
 
-class StepsExtractor:
+class StepsExtractor(StatCalculator):
     def __init__(
             self,
             sent_separators: str = "\n",
             progress_bar: bool = True,
     ):
+        super().__init__()
         self.sent_separators = sent_separators
         self.progress_bar = progress_bar
+
+    @staticmethod
+    def meta_info() -> tuple[list[str], list[str]]:
+        return (
+            [
+                "claims",
+                "claim_texts_concatenated",
+                "claim_input_texts_concatenated",
+            ],
+            [
+                "greedy_texts",
+                "greedy_tokens",
+            ],
+        )
 
     def __call__(
             self,
@@ -65,3 +80,10 @@ class StepsExtractor:
                 prev_text_i = text_i + 1
                 prev_token_i = token_i
         return claims
+
+
+def load_stat_calculator(config, builder):
+    return StepsExtractor(
+        sent_separators=getattr(config, "sent_separators", "\n"),
+        progress_bar=getattr(config, "progress_bar", False),
+    )
