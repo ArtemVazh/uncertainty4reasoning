@@ -81,7 +81,7 @@ def main(args):
 def print_stats(anno_dataset):
     all_ue = []
     for d in anno_dataset:
-        all_ue += d['uncertainty_labels']
+        all_ue += d['verified']
     print('Total:', len(all_ue), 'steps')
     t, f = all_ue.count(0.0), all_ue.count(1.0)
     print('True: {} steps ({}%)'.format(t, round(100 * t / (t + f), 2)))
