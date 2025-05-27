@@ -45,7 +45,6 @@ class DeepSeekChat:
             if self.api_key is None:
                 raise Exception("Cant ask DeepSeek without token.")
             messages = [
-                {"role": "system", "content": "You are an intelligent assistant."},
                 {"role": "user", "content": message},
             ]
             chat = self._send_request(messages)
@@ -65,7 +64,7 @@ class DeepSeekChat:
         chat_args = {
             'model': self.model,
             'messages': messages,
-            'temperature': 0,
+            'temperature': 0.6,
         }
         for i in range(len(self.wait_times)):
             try:

@@ -8,6 +8,10 @@ from functools import partial
 from collections import defaultdict
 from nltk.translate.bleu_score import sentence_bleu
 from rouge_score import rouge_scorer
+from vllm import LLM, SamplingParams
+
+
+GPU_NUM = torch.cuda.device_count()
 
 
 def parse_ans(s):
@@ -104,24 +108,65 @@ def parse_args():
 
     parser.add_argument('--save-path', type=str, required=True, help='Path to save the processed dataset')
     parser.add_argument('--hf-cache', type=str, default=None, help='Path to the HuggingFace cache directory')
+    parser.add_argument('--vllm', action='store_true', default=False, help='Whether to use vLLM as the inference backend')
     return parser.parse_args()
 
 
 def main(args):
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
-    generation_config = GenerationConfig.from_pretrained(args.model_path)
-
     prompt = open(args.prompt_file, 'r').read()
 
     dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)['test']
     dataset = dataset.select(range(args.n_samples))
-    dataset = dataset.map(partial(
-        generate_replies, prompt=prompt, args=args,
-        model=model, tokenizer=tokenizer,
-        generation_config=generation_config,
-    ))
+    generation_config = GenerationConfig.from_pretrained(args.model_path)
+
+    if not args.vllm:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
+
+        dataset = dataset.map(partial(
+            generate_replies, prompt=prompt, args=args,
+            model=model, tokenizer=tokenizer,
+            generation_config=generation_config,
+        ))
+    else:
+        prompts = [prompt.format(q=q) for q in dataset[args.question_col]]
+        sampling_params = SamplingParams(
+            n=1,
+            temperature=0,
+            seed=42,
+            max_tokens=256,
+            repetition_penalty=1.,
+            stop=['\n\n', '}\n'],
+            include_stop_str_in_output=True,
+        )
+        sampling_params.update_from_generation_config(generation_config)
+
+        llm = LLM(
+            model=args.model_path,
+            tensor_parallel_size=GPU_NUM,
+            download_dir=args.hf_cache,
+            tokenizer=args.model_path,
+            dtype='auto',
+            trust_remote_code=True,
+        )
+
+        outputs = llm.generate(prompts, sampling_params)
+
+        def parse_vllm_output(example, idx, vllm_outputs):
+            return {
+                "question": example[args.question_col],
+                "answer": example[args.answer_col],
+                "input_ids": list(vllm_outputs[idx].prompt_token_ids) + list(vllm_outputs[idx].outputs[0].token_ids),
+                "reply": vllm_outputs[idx].outputs[0].text,
+            }
+
+        # Apply using map with indices
+        dataset = dataset.map(
+            partial(parse_vllm_output, vllm_outputs=outputs),
+            with_indices=True
+        )
+
     print_stats(dataset, args)
 
     dataset.save_to_disk(args.save_path)
