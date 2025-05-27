@@ -16,4 +16,4 @@ Keep each reasoning step concise (single steps should not be too long).
 Each reasoning step must be on a single line (no line breaks within a step).
 
 Now answer:
-<Question>: {question}
+<Question>: {q}
