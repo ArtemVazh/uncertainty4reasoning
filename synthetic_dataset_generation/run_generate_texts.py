@@ -1,7 +1,6 @@
 import torch
 import argparse
 import numpy as np
-import nltk
 from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from datasets import load_dataset

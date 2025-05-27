@@ -1,6 +1,6 @@
 from lm_polygraph.generation_metrics.openai_fact_check import *
 from lm_polygraph.stat_calculators.extract_claims import *
-from synthetic_dataset_generation.utils.deepseek_chat import (DeepSeekChat)
+from synthetic_dataset_generation.utils.deepseek_chat import DeepSeekChat
 
 
 class StepFactCheck(GenerationMetric):
@@ -25,9 +25,12 @@ class StepFactCheck(GenerationMetric):
     def __str__(self):
         return "StepFactCheck"
 
+    def _clean_step(self, st: str):
+        return st.strip()
+
     def prompt1(self, input_text: str, claims: list[Claim], answer: str) -> str:
         problem = input_text.split('<|im_start|>user')[-1].split('<|im_end|>')[0]
-        steps = '\n'.join([f'Step {str(i + 1)}. {cl.claim_text.strip()}' for i, cl in enumerate(claims)])
+        steps = '\n'.join([f'Step {str(i + 1)}. {self._clean_step(cl.claim_text)}' for i, cl in enumerate(claims)])
         return r'''You are given a problem, a ground-truth solution, and a step-by-step student solution. Your task is to analyze each step in the student’s solution to determine whether it is both logically correct and relevant.
 
 Instructions:

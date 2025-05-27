@@ -39,7 +39,7 @@ def get_rewards(model, tokenizer, question, steps):
     return step_reward[0]
 
 
-def main():
+def get_parser():
     parser = argparse.ArgumentParser(description="Reward extraction using PRM model.")
 
     parser.add_argument('--hf-manager-path', type=str, required=True, help="HuggingFace repo for the UE manager file")
@@ -52,8 +52,10 @@ def main():
                         help="Path to prompt template file")
     parser.add_argument('--hf-cache', type=str, default=None, help="Cache directory for HF models")
 
-    args = parser.parse_args()
+    return parser
 
+
+def main(args):
     prm_tokenizer = AutoTokenizer.from_pretrained(args.prm_model_path, trust_remote_code=True, cache_dir=args.hf_cache)
     prm_model = AutoModel.from_pretrained(
         args.prm_model_path,
@@ -79,4 +81,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = get_parser()
+    args = parser.parse_args()
+    main(args)
