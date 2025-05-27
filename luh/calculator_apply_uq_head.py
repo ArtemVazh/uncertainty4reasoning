@@ -37,8 +37,6 @@ class CalculatorApplyUQHead(StatCalculator):
         batch = dependencies["llm_inputs"]
 
         batch["claims"] = self.prepare_claims(batch, dependencies["claims"], dependencies["full_attention_mask"].shape[1])
-        log.debug('CONTEXT LENGTHS: {}'.format(batch["context_lenghts"]))
-        log.debug('PREPARED CLAIMS: {}'.format(batch["claims"]))
 
         with torch.no_grad():
             uncertainty_logits = self.uncertainty_head._compute_tensors(

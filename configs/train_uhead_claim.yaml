@@ -27,8 +27,9 @@ ue_layer:
       dropout: 0.1
 dataset:
   path: hf:rediska0123/train_gsm8k_Qwen3-1.7B
+  prompt_path: configs/qwen3_prompt.txt
   num_instances: 0
-  test_size: 0.0
+  test_size: 0.1
   validation: test
 training_arguments:
   num_train_epochs: 10

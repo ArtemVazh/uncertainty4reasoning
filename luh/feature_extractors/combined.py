@@ -20,7 +20,7 @@ class FeatureExtractorCombined(FeatureExtractorBase):
 
             new_features = feature_extractor(llm_inputs, llm_outputs)
 
-            log.debug(f'NEW FEATURES FROM {feature_extractor} OF SHAPE {new_features.shape}: {new_features}')
+            # log.debug(f'NEW FEATURES FROM {feature_extractor} OF SHAPE {new_features.shape}: {new_features}')
 
             if torch.isnan(new_features).sum() != 0:
                 nan_pos = [

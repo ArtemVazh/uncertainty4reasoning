@@ -56,10 +56,10 @@ class LuhClaimEstimator(Estimator):
             raise ValueError(f"Unrecognized reduce type {self._reduce_type}")
 
         if self._reverse_predictions:
-            log.debug('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Here we are returning negative scores &%%%%%%%%%%%%%!!!!!!!!!')
+            # log.debug('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Here we are returning negative scores &%%%%%%%%%%%%%!!!!!!!!!')
             return (-scores).tolist()
         else:
-            log.debug('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Here we are returning positive scores &%%%%%%%%%%%%%!!!!!!!!!')
+            # log.debug('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Here we are returning positive scores &%%%%%%%%%%%%%!!!!!!!!!')
             return scores.tolist()
 
     def __str__(self):

@@ -58,8 +58,8 @@ class UncertaintyHeadClaim(UncertaintyHeadBase):
     def _compute_tensors(self, llm_inputs, X, X_attn_mask):
         claims = llm_inputs["claims"]
 
-        log.debug(f'INFERRING FEATURES OF SHAPE {X.shape}: {X}')
-        log.debug(f'FEATURES ATTENTION MASK: {X_attn_mask.shape}')
+        # log.debug(f'INFERRING FEATURES OF SHAPE {X.shape}: {X}')
+        # log.debug(f'FEATURES ATTENTION MASK: {X_attn_mask.shape}')
 
         features = X.to(torch.float32)
         features = self.proj(features)
@@ -71,7 +71,7 @@ class UncertaintyHeadClaim(UncertaintyHeadBase):
 
         for i in range(batch_size):
             entity_mask = claims[i]
-            log.debug(f'USING ENTITY MASK OF SHAPE {entity_mask.shape}: {entity_mask}')
+            # log.debug(f'USING ENTITY MASK OF SHAPE {entity_mask.shape}: {entity_mask}')
 
             if len(entity_mask) == 0:
                 continue

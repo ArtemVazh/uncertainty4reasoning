@@ -137,7 +137,7 @@ def load_data(config, tokenizer):
         tokenized_data = DatasetDict({"train": tokenized_data, "test": dataset[val_dataset_name]})
 
     def prompt_tokens(inst):
-        PROMPT = open('reasoning/gsm8k_3shot_prompt.txt', 'r').read()
+        PROMPT = open(config.dataset.prompt_path, 'r').read()
         inp = PROMPT.format(q=inst["question"])
         input_ids = tokenizer(inp, return_tensors='pt')['input_ids'][0]
         return {"prompt_tokens": input_ids}
