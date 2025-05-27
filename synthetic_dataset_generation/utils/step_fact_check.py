@@ -25,12 +25,9 @@ class StepFactCheck(GenerationMetric):
     def __str__(self):
         return "StepFactCheck"
 
-    def _clean_step(self, st: str):
-        return st.strip()
-
     def prompt1(self, input_text: str, claims: list[Claim], answer: str) -> str:
         problem = input_text.split('<|im_start|>user')[-1].split('<|im_end|>')[0]
-        steps = '\n'.join([f'Step {str(i + 1)}. {self._clean_step(cl.claim_text)}' for i, cl in enumerate(claims)])
+        steps = '\n'.join([cl.claim_text.strip() for i, cl in enumerate(claims)])
         return r'''You are given a problem, a ground-truth solution, and a step-by-step student solution. Your task is to analyze each step in the student’s solution to determine whether it is both logically correct and relevant.
 
 Instructions:
@@ -52,7 +49,7 @@ Now, please evaluate whether the student’s steps are correct and logical.'''.f
 
     def prompt2(self, input_text: str, claims: list[Claim], answer: str, reply: str) -> str:
         problem = input_text.split('<|im_start|>user')[-1].split('<|im_end|>')[0]
-        steps = '\n'.join([f'Step {str(i + 1)}. {cl.claim_text.strip()}' for i, cl in enumerate(claims)])
+        steps = '\n'.join([cl.claim_text.strip() for i, cl in enumerate(claims)])
         return r'''You are given a problem, a step-by-step student solution, and an assessment text indicating which steps are correct or incorrect. 
 Your task is to output a single line listing the indices (step numbers) of all the steps that are assessed as incorrect.
 
