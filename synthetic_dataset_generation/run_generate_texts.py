@@ -1,5 +1,6 @@
 import torch
 import argparse
+import re
 import numpy as np
 from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
@@ -26,6 +27,16 @@ def parse_ans(s):
             return float(x)
         except:
             return None
+    if r'<Answer>:' in s:
+        x = s.split(r'<Answer>:')[-1].replace(',', '')
+        match = re.search(r'[-+]?\d*\.?\d+', x)
+        if not match:
+            return None
+        number_str = match.group()
+        number = float(number_str)
+        if number.is_integer():
+            number = int(number)
+        return number
     return None
 
 
