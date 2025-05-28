@@ -50,13 +50,13 @@ Instructions:
 - If all steps are correct and they lead to the same final answer as the ground-truth solution, conclude that there are no errors.
 - If any step contains an error that would prevent the student from reaching the correct solution, identify and report those specific steps with an explanation.
 
-Problem:
+PROBLEM:
 {problem}
 
-Ground-truth solution:
+GROUND-TRUTH SOLUTION:
 {answer}
 
-Student's step-by-step solution:
+STUDENT'S SOLUTION STEPS:
 {steps}
 
 Now, please evaluate whether the student’s steps are correct and logical.'''.format(problem=problem, answer=answer,
@@ -80,16 +80,16 @@ Important:
 - Output only the list, nothing else.
 - The list must have the same length as the number of steps.
 
-Problem:
+PROBLEM:
 {problem}
 
-Student's step-by-step solution:
+STUDENT'S SOLUTION STEPS:
 {steps}
 
-Assessment of the student's steps:
+ASSESSMENT OF STUDENT SOLUTION STEPS:
 {reply}
 
-Output:
+OUTPUT LIST:
 """.format(problem=problem, steps=steps, reply=reply)
 
     def parse_reply(self, reply: str) -> list[int] | None:

@@ -5,10 +5,12 @@ class StepsExtractor(StatCalculator):
     def __init__(
             self,
             sent_separators: str = "\n",
+            skip_starts: list[str] = ['Reasoning Steps:'],
             progress_bar: bool = True,
     ):
         super().__init__()
         self.sent_separators = sent_separators
+        self.skip_starts = skip_starts
         self.progress_bar = progress_bar
 
     @staticmethod
@@ -56,21 +58,25 @@ class StepsExtractor(StatCalculator):
             "claim_input_texts_concatenated": claim_input_texts_concatenated,
         }
 
+    def filter_claim_texts(self, claim_text: str) -> bool:
+        claim_text = claim_text.strip()
+        return len(claim_text) > 0 and not any(claim_text.lower().startswith(b.lower()) for b in self.skip_starts)
+
     def split_to_steps(
             self,
             text: str,
             tokens: list[int],
             tokenizer,
     ) -> list[Claim]:
-        if tokenizer.decode(tokens) != text:
+        if not tokenizer.decode(tokens).startswith(text):
             return []
         prev_token_i, token_i = 0, 0
         prev_text_i = 0
         claims: list[Claim] = []
         for text_i in range(len(text)):
-            if text[text_i] in self.sent_separators:
+            if text[text_i] in self.sent_separators and self.filter_claim_texts(text[prev_text_i:text_i + 1]):
                 claims.append(Claim(
-                    claim_text=text[prev_text_i:text_i + 1],
+                    claim_text=text[prev_text_i:text_i + 1].strip(),
                     sentence=text[prev_text_i:text_i + 1],
                     aligned_token_ids=list(range(prev_token_i, token_i + 1))
                 ))
@@ -79,6 +85,12 @@ class StepsExtractor(StatCalculator):
             if text[text_i] in self.sent_separators:
                 prev_text_i = text_i + 1
                 prev_token_i = token_i
+        if self.filter_claim_texts(text[prev_text_i:]):
+            claims.append(Claim(
+                claim_text=text[prev_text_i:].strip(),
+                sentence=text[prev_text_i:],
+                aligned_token_ids=list(range(prev_token_i, token_i + 1))
+            ))
         return claims
 
 
