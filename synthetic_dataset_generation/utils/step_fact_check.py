@@ -100,7 +100,7 @@ OUTPUT LIST:
         if reply.startswith('[') and reply.endswith(']'):
             reply = reply[1:-1]
         try:
-            return [int(x) - 1 for x in reply.split(',')]
+            return [int(x) for x in reply.split(',')]
         except Exception as e:
             log.warning('Skipping text, because could not parse DeepSeek reply: {}'.format(orig_reply))
             return None
@@ -111,10 +111,17 @@ OUTPUT LIST:
         reply = self.chat.ask(q1)
         q2 = self.prompt2(input_text, claims, answer, reply)
         reply = self.chat.ask(q2)
-        wrong_claim_ids: list[int] | None = self.parse_reply(reply)
-        if wrong_claim_ids is None:
+        claim_labels: list[int] | None = self.parse_reply(reply)
+        if claim_labels is None:
             return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
-        return [(1 if i in wrong_claim_ids else 0) for i in range(len(claims))]
+        if len(claim_labels) + 1 == len(claims):
+            claim_labels.append(np.nan)  # last answer is undefined
+        if len(claim_labels) != len(claims):
+            log.warning(
+                'Skipping text, because of inconsistend number of '
+                'labels in DeepSeek reply: expected {}, got {}'.format(len(claims), reply))
+            return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
+        return [(1 if claim_labels[i] == 0 else 0) for i in range(len(claims))]
 
     def __call__(
             self,
@@ -134,8 +141,7 @@ OUTPUT LIST:
         with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
             futures = [executor.submit(self._score_single, item) for item in all_inputs]
             claim_labels = []
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Verifying claims",
-                               disable=not self.progress_bar):
+            for future in tqdm(futures, desc="Verifying claims", disable=not self.progress_bar):
                 claim_labels.append(future.result())
 
         return claim_labels
