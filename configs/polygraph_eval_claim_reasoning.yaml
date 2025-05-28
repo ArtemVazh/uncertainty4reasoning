@@ -21,7 +21,12 @@ use_claim_ue: true
 
 generation_metrics: [{
   'name': 'StepFactCheck',
-  'kwargs': {'model': 'deepseek-reasoner', 'n_threads': 16, 'progress_bar': false}
+  'kwargs': {
+    'prompt_file': 'configs/qwen3_prompt.txt',
+    'model': 'deepseek-reasoner',
+    'n_threads': 16,
+    'progress_bar': false
+  }
 }]
 
 estimators:

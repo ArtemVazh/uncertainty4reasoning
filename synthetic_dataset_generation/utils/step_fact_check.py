@@ -1,12 +1,15 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from parse import parse
+
 from lm_polygraph.generation_metrics.openai_fact_check import *
 from lm_polygraph.stat_calculators.extract_claims import *
 from synthetic_dataset_generation.utils.deepseek_chat import DeepSeekChat
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class StepFactCheck(GenerationMetric):
     def __init__(
             self,
+            prompt_file: str,
             cache_path: str = "~/.cache",
             model: str = 'deepseek-reasoner',
             api_key: str | None = None,
@@ -15,6 +18,10 @@ class StepFactCheck(GenerationMetric):
             wait_times: tuple = (5, 10, 30, 60, 120),
     ):
         super().__init__(["input_texts", "claims"], "claim")
+
+        with open(prompt_file, 'r') as f:
+            self.prompt = f.read()
+
         self.chat = DeepSeekChat(cache_path, model=model, api_key=api_key, wait_times=wait_times)
 
         # use this for OpenAI
@@ -26,8 +33,15 @@ class StepFactCheck(GenerationMetric):
     def __str__(self):
         return "StepFactCheck"
 
+    def parse_problem(self, input_text: str):
+        try:
+            return parse(self.prompt, input_text).named['q']
+        except Exception as e:
+            # For run_extract_verify_claims.py, input texts are raw questions without prompt
+            return input_text
+
     def prompt1(self, input_text: str, claims: list[Claim], answer: str) -> str:
-        problem = input_text.split('<|im_start|>user')[-1].split('<|im_end|>')[0]
+        problem = self.parse_problem(input_text)
         steps = '\n'.join([cl.claim_text.strip() for i, cl in enumerate(claims)])
         return r'''You are given a problem, a ground-truth solution, and a step-by-step student solution. Your task is to analyze each step in the student’s solution to determine whether it is both logically correct and relevant.
 
@@ -49,10 +63,22 @@ Now, please evaluate whether the student’s steps are correct and logical.'''.f
                                                                                     steps=steps)
 
     def prompt2(self, input_text: str, claims: list[Claim], answer: str, reply: str) -> str:
-        problem = input_text.split('<|im_start|>user')[-1].split('<|im_end|>')[0]
-        steps = '\n'.join([cl.claim_text.strip() for i, cl in enumerate(claims)])
-        return r'''You are given a problem, a step-by-step student solution, and an assessment text indicating which steps are correct or incorrect. 
-Your task is to output a single line listing the indices (step numbers) of all the steps that are assessed as incorrect.
+        problem = self.parse_problem(input_text)
+        steps = [cl.claim_text.strip() for i, cl in enumerate(claims)]
+        return r"""
+You are given:
+- A problem
+- A student's step-by-step solution (as a Python list of string steps)
+- An assessment of student's solution
+
+Your task:
+Output a single Python list where each element is:
+- 1 if the corresponding step is correct
+- 0 if the step is incorrect
+
+Important:
+- Output only the list, nothing else.
+- The list must have the same length as the number of steps.
 
 Problem:
 {problem}
@@ -60,11 +86,11 @@ Problem:
 Student's step-by-step solution:
 {steps}
 
-Step-by-step assessment:
+Assessment of the student's steps:
 {reply}
 
-Now, please output only the indices of all incorrect steps found, separated by commas. If all steps are correct, output "All steps are correct."'''.format(
-            problem=problem, steps=steps, reply=reply)
+Output:
+""".format(problem=problem, steps=steps, reply=reply)
 
     def parse_reply(self, reply: str) -> list[int] | None:
         if 'all steps are correct' in reply.lower():

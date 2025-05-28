@@ -53,7 +53,12 @@ def main(args):
     print("Verifying claims...")
     stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
     api_key = open(args.api_key_file, 'r').read()
-    fact_checker = StepFactCheck(api_key=api_key, n_threads=args.n_threads, cache_path=args.hf_cache)
+    fact_checker = StepFactCheck(
+        prompt_file=args.prompt_file,
+        api_key=api_key,
+        n_threads=args.n_threads,
+        cache_path=args.hf_cache,
+    )
     verified = fact_checker(stats, None)
     print("Done.")
 
