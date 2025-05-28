@@ -89,7 +89,7 @@ class StepsExtractor(StatCalculator):
             claims.append(Claim(
                 claim_text=text[prev_text_i:].strip(),
                 sentence=text[prev_text_i:],
-                aligned_token_ids=list(range(prev_token_i, token_i + 1))
+                aligned_token_ids=list(range(prev_token_i, min(token_i + 1, len(tokens))))
             ))
         return claims
 
