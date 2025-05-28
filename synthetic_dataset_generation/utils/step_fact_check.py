@@ -1,6 +1,7 @@
 from lm_polygraph.generation_metrics.openai_fact_check import *
 from lm_polygraph.stat_calculators.extract_claims import *
 from synthetic_dataset_generation.utils.deepseek_chat import DeepSeekChat
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class StepFactCheck(GenerationMetric):
@@ -105,12 +106,10 @@ Now, please output only the indices of all incorrect steps found, separated by c
         ]
 
         with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
-            claim_labels: list[list] = list(
-                tqdm(
-                    executor.map(self._score_single, all_inputs),
-                    total=len(all_inputs),
-                    desc="Verifying claims",
-                    disable=not self.progress_bar,
-                )
-            )
+            futures = [executor.submit(self._score_single, item) for item in all_inputs]
+            claim_labels = []
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Verifying claims",
+                               disable=not self.progress_bar):
+                claim_labels.append(future.result())
+
         return claim_labels
