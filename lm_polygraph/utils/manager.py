@@ -34,7 +34,7 @@ from lm_polygraph.defaults.register_default_stat_calculators import (
     register_default_stat_calculators,
 )
 from lm_polygraph.utils.common import flatten_results
-from huggingface_hub import HfApi, Repository
+from huggingface_hub import HfApi, Repository, hf_hub_download
 
 import logging
 
@@ -485,9 +485,33 @@ class UEManager:
             output_dir = tmp_path
             self.save(output_dir)
             repo.git_add(auto_lfs_track=True)
-            repo.git_commit("Upload UncertaintyHead model and config")
+            repo.git_commit("Upload UEManager")
             repo.git_push()
-        log.info(f"Model pushed to Hugging Face Hub: https://huggingface.co/{repo_id}")
+        log.info(f"Manager pushed to Hugging Face Hub: https://huggingface.co/{repo_id}")
+
+    @staticmethod
+    def load_from_hub(
+            repo_id: str,
+            token: str | None = None,
+            builder_env_stat_calc: BuilderEnvironmentStatCalculator = None,
+            available_stat_calculators: List[StatCalculatorContainer] = None,
+    ) -> "UEManager":
+        """
+        Loads UEManager from a file stored in the Hugging Face Hub repository.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            downloaded_file = hf_hub_download(
+                repo_id=repo_id,
+                filename="ue_manager.pth",
+                token=token,
+                cache_dir=tmp_path  # forces download to this temporary location
+            )
+            return UEManager.load(
+                load_path=downloaded_file,
+                builder_env_stat_calc=builder_env_stat_calc,
+                available_stat_calculators=available_stat_calculators,
+            )
 
     @staticmethod
     def load(

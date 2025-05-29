@@ -1,6 +1,5 @@
 import torch
 import argparse
-import re
 import numpy as np
 from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
@@ -9,35 +8,10 @@ from functools import partial
 from collections import defaultdict
 from nltk.translate.bleu_score import sentence_bleu
 from rouge_score import rouge_scorer
+from utils import parse_ans
 from vllm import LLM, SamplingParams
 
-
 GPU_NUM = torch.cuda.device_count()
-
-
-def parse_ans(s):
-    if '####' in s:
-        return float(s.split('####')[-1].replace(',', ''))
-    if r'\boxed{' in s:
-        x = s.split(r'\boxed{')[-1].split('}')[0].replace(',', '')
-        x = x.split('=')[-1]
-        if x.endswith('%'):
-            x = x[:-1]
-        try:
-            return float(x)
-        except:
-            return None
-    if r'<Answer>:' in s:
-        x = s.split(r'<Answer>:')[-1].replace(',', '')
-        match = re.search(r'[-+]?\d*\.?\d+', x)
-        if not match:
-            return None
-        number_str = match.group()
-        number = float(number_str)
-        if number.is_integer():
-            number = int(number)
-        return number
-    return None
 
 
 def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
@@ -119,7 +93,8 @@ def parse_args():
 
     parser.add_argument('--save-path', type=str, required=True, help='Path to save the processed dataset')
     parser.add_argument('--hf-cache', type=str, default=None, help='Path to the HuggingFace cache directory')
-    parser.add_argument('--vllm', action='store_true', default=False, help='Whether to use vLLM as the inference backend')
+    parser.add_argument('--vllm', action='store_true', default=False,
+                        help='Whether to use vLLM as the inference backend')
     return parser.parse_args()
 
 

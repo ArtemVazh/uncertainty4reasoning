@@ -1,5 +1,4 @@
 import argparse
-import json
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -9,7 +8,9 @@ from transformers import (
     AutoTokenizer
 )
 from transformers.configuration_utils import PretrainedConfig
-from utils import load_manager, extract_steps, extract_questions
+
+from lm_polygraph import UEManager
+from utils import extract_steps, extract_questions
 
 
 class ReasonEval_7B(MistralPreTrainedModel):
@@ -76,7 +77,7 @@ class ReasonEval_34B(LlamaPreTrainedModel):
         return scores
 
 
-def get_step_level_scores(question, reasoning_steps, tokenizer, model, model_size):
+def get_step_level_scores(question, reasoning_steps, tokenizer, model, model_size) -> list[dict[str, float]]:
     PROMPT_FORMAT = "Question:\n{input}\nAnswer:\nLet's think step by step.\n"
     step_separator = f"{tokenizer.pad_token}"
     combined_steps = "".join(step + step_separator for step in reasoning_steps)
@@ -122,7 +123,8 @@ def main():
 
     parser.add_argument('--hf-manager-path', type=str, required=True, help="HuggingFace repo for the UE manager file")
     parser.add_argument('--base-model-path', type=str, required=True, help="Path or name of the base model")
-    parser.add_argument('--save-path', type=str, required=True, help="Path to save the output rewards JSON")
+    parser.add_argument('--hf-save-path', type=str, default=None,
+                        help="Path to save manager with rewards, default: same as hf-manager-path")
     parser.add_argument('--reasoneval-model-path', type=str, default='GAIR/ReasonEval-7B',
                         help='Path to the ReasonEval model.')
     parser.add_argument('--device', type=str, default="auto", help="Device map setting for model loading")
@@ -145,19 +147,24 @@ def main():
     else:
         raise ValueError(f"Could not determine model size from path: {args.reasoneval_model_path}")
 
-    man = load_manager(args.hf_manager_path)
+    man = UEManager.load_from_hub(args.hf_manager_path)
     steps = extract_steps(man, args.base_model_path, args.hf_cache)
     questions = extract_questions(man, args.prompt_file)
 
-    scores = []
+    scores: list[dict[str, float]] = []
     for i in tqdm(range(len(questions)), desc='Evaluating ReasonEval'):
         s = get_step_level_scores(questions[i], steps[i], tokenizer, model, model_size)
         assert len(s) == len(steps[i])
-        scores.append(s)
+        scores += s
 
-    with open(args.save_path, 'w') as f:
-        json.dump(scores, f)
-    print('Saved to {}'.format(args.save_path))
+    if args.hf_save_path is None:
+        args.hf_save_path = args.hf_manager_path
+    # higher values indicate higher uncertainty
+    man.estimations['claim', f'ReasonEval'] = [s['redundancy'] - s['validity'] for s in scores]
+    man.estimations['claim', f'ReasonEval_redundancy'] = [s['redundancy'] for s in scores]
+    man.estimations['claim', f'ReasonEval_validity'] = [-s['validity'] for s in scores]
+    man.push_to_hub(args.hf_save_path)
+    print('Saved to {}'.format(args.hf_save_path))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
 import argparse
 import torch
-import json
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
-from utils import load_manager, extract_steps, extract_questions
+
+from lm_polygraph import UEManager
+from utils import extract_steps, extract_questions
 
 
 def make_step_rewards(logits, token_masks):
@@ -19,7 +20,7 @@ def make_step_rewards(logits, token_masks):
     return all_scores_res
 
 
-def get_rewards(model, tokenizer, question, steps):
+def get_rewards(model, tokenizer, question, steps) -> list[float]:
     if len(steps) == 0:
         return []
     messages = [
@@ -44,7 +45,8 @@ def get_parser():
 
     parser.add_argument('--hf-manager-path', type=str, required=True, help="HuggingFace repo for the UE manager file")
     parser.add_argument('--base-model-path', type=str, required=True, help="Path or name of the base model")
-    parser.add_argument('--save-path', type=str, required=True, help="Path to save the output rewards JSON")
+    parser.add_argument('--hf-save-path', type=str, default=None,
+                        help="Path to save manager with rewards, default: same as hf-manager-path")
     parser.add_argument('--prm-model-path', type=str, default="Qwen/Qwen2.5-Math-7B-PRM800K",
                         help="Path or name of the PRM model")
     parser.add_argument('--device', type=str, default="auto", help="Device map setting for model loading")
@@ -65,19 +67,22 @@ def main(args):
         cache_dir=args.hf_cache,
     ).eval()
 
-    man = load_manager(args.hf_manager_path)
+    man = UEManager.load_from_hub(args.hf_manager_path)
     steps = extract_steps(man, args.base_model_path, args.hf_cache)
     questions = extract_questions(man, args.prompt_file)
-    rewards = []
 
+    rewards: list[float] = []
     for i in tqdm(range(len(questions)), desc='Evaluating PRM'):
         r = get_rewards(prm_model, prm_tokenizer, questions[i], steps[i])
         assert len(r) == len(steps[i])
-        rewards.append(r)
+        rewards += r
 
-    with open(args.save_path, 'w') as f:
-        json.dump(rewards, f)
-    print('Saved to {}'.format(args.save_path))
+    if args.hf_save_path is None:
+        args.hf_save_path = args.hf_manager_path
+    # higher values indicate higher uncertainty
+    man.estimations['claim', f'PRM_{args.prm_model_path}'] = [-r for r in rewards]
+    man.push_to_hub(args.hf_save_path)
+    print('Saved to {}'.format(args.hf_save_path))
 
 
 if __name__ == '__main__':

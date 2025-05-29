@@ -9,6 +9,9 @@ def main(args):
     # Slice dataset if needed
     if args.start_index is not None:
         dataset = dataset.select(range(args.start_index, len(dataset)))
+    if args.dataset_size is not None:
+        dataset = dataset.select(range(args.dataset_size))
+    print(f'Creating test dataset of size {len(dataset)}')
 
     # Format questions and extract answers
     questions, answers = [], []
@@ -40,6 +43,7 @@ if __name__ == '__main__':
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--start-index', type=int, required=True, help='Start index for slicing dataset')
+    parser.add_argument('--dataset-size', type=int, default=None, help='Number of test instances, default: all')
     parser.add_argument('--save-path', type=str, required=True, help='Directory to save the processed dataset')
     parser.add_argument('--prompt-file', type=str, default='configs/gsm8k_3shot_prompt.txt',
                         help='Path to the prompt template file')

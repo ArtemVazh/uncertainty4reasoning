@@ -9,7 +9,7 @@ Main steps to run whole benchmark on new dataset/model (there are examples for e
 3. Train UHead: `train_luh/run_train_luh.py`
 4. Test UHead: `eval_uhead.py`
 5. Evaluate baselines
-    - PRM: `eval_qwen_prm.py`
+    - PRM: `eval_prm.py`
     - ReasonEval: `eval_reasoneval.py`
 6. Plot resulting tables: `plot_results.ipynb`
 
@@ -95,24 +95,22 @@ HYDRA_CONFIG=configs/polygraph_eval_claim_reasoning.yaml \
 ## 5. Evaluate baselines
 
 ### Process-Reward Model baseline
-Runs super fast, saves reward values to `save-path`.
+Runs super fast, updates manager in `hf-manager-path` with PRM reward values.
 ```bash
-python eval_qwen_prm.py \
+python eval_prm.py \
     --hf-manager-path rediska0123/ue_manager_gsm8k_Qwen3-1.7B \
     --base-model-path Qwen/Qwen3-1.7B \
-    --save-path /cluster/project/sachan/ekaterina/.cache/scores_prm_gsm8k_Qwen3-1.7B.json \
     --prm-model-path Qwen/Qwen2.5-Math-7B-PRM800K \
     --prompt-file configs/qwen3_prompt.txt \
     --device auto
 ```
 
 ### ReasonEval baseline
-Runs super fast, saves reward values to `save-path`.
+Runs super fast, updates manager in `hf-manager-path` with PRM reward values.
 ```bash
 python eval_reasoneval.py \
     --hf-manager-path rediska0123/ue_manager_gsm8k_Qwen3-1.7B \
     --base-model-path Qwen/Qwen3-1.7B \
-    --save-path /cluster/project/sachan/ekaterina/.cache/scores_reasoneval_gsm8k_Qwen3-1.7B.json \
     --reasoneval-model-path GAIR/ReasonEval-7B \
     --prompt-file configs/qwen3_prompt.txt \
     --device auto

@@ -57,7 +57,7 @@ class CalculatorApplyUQHead(StatCalculator):
             instance_claims = []
             for claim in claims[i]:
                 mask = torch.zeros(full_len, dtype=int)
-                mask[context_lenghts[i] + torch.as_tensor(claim.aligned_token_ids)] = 1
+                mask[(context_lenghts[i] + torch.as_tensor(claim.aligned_token_ids)).int()] = 1
                 instance_claims.append(mask[1:]) # ignoring <s>
 
             all_claim_tensors.append(torch.stack(instance_claims) if len(instance_claims) > 0 else torch.zeros(0, full_len - 1, dtype=int))

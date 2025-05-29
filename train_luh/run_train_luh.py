@@ -238,7 +238,7 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
                 mapping.append(idx)
     
         adjusted_positions = [mapping[i] for i in claim_token_positions]
-        return context_length + torch.tensor(adjusted_positions)
+        return (context_length + torch.tensor(adjusted_positions)).int()
     
 
     def torch_call(self, examples):
