@@ -23,6 +23,9 @@ class PerplexityClaim(Estimator):
             claim_ue.append([])
             for claim in sample_claims:
                 tokens = np.array(claim.aligned_token_ids)
+                if len(tokens) == 0:
+                    claim_ue[-1].append(np.nan)
+                    continue
                 claim_ll = np.array(sample_ll)[tokens]
                 claim_ue[-1].append(self._reduce(claim_ll))
         return claim_ue

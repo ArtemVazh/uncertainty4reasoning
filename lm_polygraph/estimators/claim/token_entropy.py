@@ -39,6 +39,9 @@ class MaxTokenEntropyClaim(Estimator):
             claim_ue.append([])
             for claim in sample_claims:
                 tokens = np.array(claim.aligned_token_ids)
+                if len(tokens) == 0:
+                    claim_ue[-1].append(np.nan)
+                    continue
                 claim_ent = np.array(sample_ent)[tokens]
                 claim_ue[-1].append(self._reduce(claim_ent))
         return claim_ue

@@ -51,6 +51,9 @@ class PointwiseMutualInformationClaim(Estimator):
                 sample_lm_lp[0] = 0
                 mi_scores = np.array(sample_lp) - np.array(sample_lm_lp)
                 tokens = np.array(claim.aligned_token_ids)
+                if len(tokens) == 0:
+                    claim_ue[-1].append(np.nan)
+                    continue
                 claim_pmi = mi_scores[tokens]
                 claim_ue[-1].append(self._reduce(claim_pmi))
         return claim_ue

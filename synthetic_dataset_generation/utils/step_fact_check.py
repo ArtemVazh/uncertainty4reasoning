@@ -121,7 +121,13 @@ OUTPUT LIST:
                 'Skipping text, because of inconsistend number of '
                 'labels in DeepSeek reply: expected {}, got {}'.format(len(claims), reply))
             return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
-        return [(1 if claim_labels[i] == 0 else 0) for i in range(len(claims))]
+        return [
+            (
+                np.nan if len(claims[i].aligned_token_ids) == 0 else
+                1 if claim_labels[i] == 0 else
+                0
+            ) for i in range(len(claims))
+        ]
 
     def __call__(
             self,
