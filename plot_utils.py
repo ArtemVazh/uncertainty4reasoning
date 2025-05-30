@@ -2,6 +2,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import colors
+from functools import partial
 
 
 def get_cmap():
@@ -13,7 +14,10 @@ def get_cmap():
 
 def b_g(s, cmap, low=0, high=0):
     values = s
-    if any(s.name.startswith(x) for x in ['ece', 'bs', 'rpp']):  # lower is better
+    nm = s.name
+    if isinstance(nm, tuple):
+        nm = nm[-1]
+    if any(nm.startswith(x) for x in ['ece', 'bs', 'rpp']):  # lower is better
         values = -values
     if isinstance(values.max(), str):
         return ['' for _ in values]
@@ -25,18 +29,30 @@ def b_g(s, cmap, low=0, high=0):
     return [f'color: {text_color}; background-color: {color}' for text_color, color in zip(text_colors, back_colors)]
 
 
-def pretty_plot_table(df, title=''):
-    return df.style.apply(b_g, cmap=get_cmap()).set_caption(title).set_table_styles([
-        {
-            'selector': 'caption',
-            'props': [
-                ('caption-side', 'top'), ('text-align', 'right'),
-                ('color', 'black'),
-                ('font-size', '15px'),
-                ('font-weight', 'bold')
-            ]
-        },
-        {"selector": "th.row_heading", "props": [("text-align", "left")]},
-        {"selector": "thead th", "props": [("border-bottom", "2px solid black")]},
-        {"selector": "th.row_heading.level0", "props": [("border-top", "2px solid black")]}
-    ])
+def format_trimmed(x, n_decimal: int = 3):
+    if isinstance(x, float):
+        return f"{x:.{n_decimal}f}"
+    return x
+
+
+def pretty_plot_table(df, title: str = '', n_decimal: int = 3):
+    return (
+        df.style
+        .apply(b_g, cmap=get_cmap())
+        .format(partial(format_trimmed, n_decimal=n_decimal))
+        .set_caption(title)
+        .set_table_styles([
+            {
+                'selector': 'caption',
+                'props': [
+                    ('caption-side', 'top'), ('text-align', 'right'),
+                    ('color', 'black'),
+                    ('font-size', '15px'),
+                    ('font-weight', 'bold')
+                ]
+            },
+            {"selector": "th.row_heading", "props": [("text-align", "left")]},
+            {"selector": "thead th", "props": [("border-bottom", "2px solid black")]},
+            {"selector": "th.row_heading.level0", "props": [("border-top", "2px solid black")]}
+        ])
+    )

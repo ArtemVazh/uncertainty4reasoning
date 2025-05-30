@@ -15,11 +15,11 @@ from synthetic_dataset_generation.utils.steps_extractor import StepsExtractor
 def extract_steps(man, base_model_path: str, hf_cache: str = None) -> list[list[str]]:
     base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True,
                                                    cache_dir=hf_cache)
-
-    steps_extractor = StepsExtractor()
-    steps = steps_extractor(man.stats, man.stats['input_texts'],
-                            model=Namespace(tokenizer=base_tokenizer))["claims"]
-    return [[step.claim_text for step in sample_steps] for sample_steps in steps]
+    return StepsExtractor()(
+        man.stats,
+        man.stats['input_texts'],
+        model=Namespace(tokenizer=base_tokenizer),
+    )["claims"]
 
 
 def extract_questions(man, prompt_file: str) -> list[str]:
@@ -32,6 +32,7 @@ def extract_questions(man, prompt_file: str) -> list[str]:
 def parse_ans(s):
     if '####' in s:
         return float(s.split('####')[-1].replace(',', ''))
+
     if r'\boxed{' in s:
         x = s.split(r'\boxed{')[-1].split('}')[0].replace(',', '')
         x = x.split('=')[-1]
@@ -41,16 +42,26 @@ def parse_ans(s):
             return float(x)
         except:
             return None
+
     if r'<Answer>:' in s:
         x = s.split(r'<Answer>:')[-1].replace(',', '')
-        match = re.search(r'[-+]?\d*\.?\d+', x)
-        if not match:
+        matches = re.findall(r'[-+]?\d*\.?\d+', x)
+        if not matches:
             return None
-        number_str = match.group()
+        number_str = matches[-1]
         number = float(number_str)
         if number.is_integer():
             number = int(number)
         return number
+
+    matches = re.findall(r'[-+]?\d*\.?\d+', s.replace(',', ''))
+    if matches:
+        number_str = matches[-1]
+        number = float(number_str)
+        if number.is_integer():
+            number = int(number)
+        return number
+
     return None
 
 
