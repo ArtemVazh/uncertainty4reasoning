@@ -39,6 +39,8 @@ def generate_targets(dataset, reply_tokens_all):
 
 def main(args):
     dataset = load_from_disk(args.dataset_path)
+    if args.sample > 0:
+        dataset = dataset.select(range(args.sample))
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
     prompt = open(args.prompt_file, 'r').read()
 
@@ -51,7 +53,25 @@ def main(args):
     print("Done.")
 
     print("Verifying claims...")
-    stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
+    if 'gsm8k' in args.dataset_path:
+        stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
+    elif 'strategy_qa' in args.dataset_path:
+        def parse_strategy_qa_answer(dataset):
+            parsed_answers = []
+            for answer, facts in zip(dataset["answer"], dataset["facts"]):
+                answer_str = ""
+                if answer:
+                    answer_str += "Yes, according to the facts: "
+                else:
+                    answer_str += "No, according to the facts: "
+                for i, fact in enumerate(facts):
+                    answer_str += f"{i+1}. {fact} "
+                parsed_answers.append(answer_str)
+            return parsed_answers
+        stats = {"input_texts": dataset["question"], "claims": claims, "answers": parse_strategy_qa_answer(dataset)}
+    else:
+        raise ValueError(f"Dataset path {args.dataset_path} not supported")
+
     api_key = open(args.api_key_file, 'r').read()
     fact_checker = StepFactCheck(
         prompt_file=args.prompt_file,
@@ -104,6 +124,7 @@ if __name__ == '__main__':
                         help="Path to file containing OpenAI API key.")
     parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
+    parser.add_argument("--sample", type=int, default=-1, help="Sampling for debugging.")
 
     args = parser.parse_args()
     main(args)
