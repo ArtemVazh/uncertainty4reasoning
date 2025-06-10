@@ -1,6 +1,7 @@
 import torch
 import argparse
 import numpy as np
+import multiprocessing
 from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from datasets import load_dataset
@@ -10,6 +11,13 @@ from nltk.translate.bleu_score import sentence_bleu
 from rouge_score import rouge_scorer
 from utils import parse_ans
 from vllm import LLM, SamplingParams
+from transformers import modeling_utils
+import os
+import pandas as pd
+from datasets import Dataset
+
+if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
 
 GPU_NUM = torch.cuda.device_count()
 
@@ -18,21 +26,24 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
     inst["question"] = inst[args.question_col]
     inst["answer"] = inst[args.answer_col]
     question = prompt.format(q=inst["question"])
+    inst["prompt"] = question  # Store the formatted prompt
     inputs = tokenizer(question, return_tensors='pt')['input_ids']
     inputs = inputs.to(model.device)
+    
+    # Override conflicting parameters in generation_config
+    generation_config.do_sample = False
+    generation_config.max_new_tokens = 1024
+    generation_config.repetition_penalty = 1.0
+    generation_config.diversity_penalty = 0.0
+    generation_config.length_penalty = 1.0
+    generation_config.num_return_sequences = 1
+    # Don't set temperature when do_sample=False
+
     with torch.no_grad():
         outputs = model.generate(
             inputs,
-            num_return_sequences=1,
             generation_config=generation_config,
-            pad_token_id=tokenizer.eos_token_id,
-            temperature=0.,
-            max_new_tokens=256,
-            do_sample=False,
-            repetition_penalty=1.,
-            diversity_penalty=0.,
-            length_penalty=1.,
-            stop_strings=['\n\n', '}\n'],
+            # stop_strings=['\n\n', '}\n'],
             tokenizer=tokenizer,
         )
     reply = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
@@ -78,9 +89,9 @@ def parse_tuple(s):
 def parse_args():
     parser = argparse.ArgumentParser(description="Create generation texts for model.")
 
-    parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
-                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main"')
-    parser.add_argument('--dataset-split', type=parse_tuple, default="test", help='Dataset split')
+    parser.add_argument('--dataset-path', type=str, default="openai/gsm8k,main",
+                        help='Path to the dataset file OR HuggingFace dataset identifier as "dataset,config"')
+    parser.add_argument('--dataset-split', type=str, default="test", help='Dataset split')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--final-answers', action=argparse.BooleanOptionalAction, default=True,
@@ -97,11 +108,41 @@ def parse_args():
                         help='Whether to use vLLM as the inference backend')
     return parser.parse_args()
 
-
 def main(args):
+    # Fix CUDA multiprocessing issue with vLLM
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
+    
     prompt = open(args.prompt_file, 'r').read()
+    # import pdb; pdb.set_trace()
+    
+    # Check if dataset_path is a file path
+    if os.path.isfile(args.dataset_path):
+        # Load from local file
+        if args.dataset_path.endswith('.csv'):
+            df = pd.read_csv(args.dataset_path)
+        else:
+            df = pd.read_json(args.dataset_path, lines=True)
 
-    dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)['test']
+        df_new = df[[args.question_col, args.answer_col]]   
+        dataset = Dataset.from_pandas(df_new)
+    else:
+        # # Parse as HuggingFace dataset identifier
+        # if ',' in args.dataset_path:
+        #     dataset_parts = args.dataset_path.split(',')
+        #     dataset_name = dataset_parts[0].strip()
+        #     config_name = dataset_parts[1].strip() if len(dataset_parts) > 1 else None
+        #     import pdb; pdb.set_trace()
+        #     if config_name:
+        #         dataset = load_dataset(dataset_name, config_name, cache_dir=args.hf_cache)[args.dataset_split]
+        #     else:
+        #         dataset = load_dataset(dataset_name, cache_dir=args.hf_cache)[args.dataset_split]
+        # else:
+        #     # Single dataset name without config
+        dataset = load_dataset(args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
+    
     dataset = dataset.select(range(args.n_samples))
     generation_config = GenerationConfig.from_pretrained(args.model_path)
 
@@ -109,7 +150,7 @@ def main(args):
         model = AutoModelForCausalLM.from_pretrained(
             args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
-
+        # import pdb; pdb.set_trace()
         dataset = dataset.map(partial(
             generate_replies, prompt=prompt, args=args,
             model=model, tokenizer=tokenizer,
@@ -126,7 +167,9 @@ def main(args):
             stop=['\n\n', '}\n'],
             include_stop_str_in_output=True,
         )
-        sampling_params.update_from_generation_config(generation_config)
+        # sampling_params.update_from_generation_config(generation_config)
+        # import pdb; pdb.set_trace()
+        sampling_params.update_from_generation_config(generation_config.to_dict())
 
         llm = LLM(
             model=args.model_path,
@@ -139,17 +182,18 @@ def main(args):
 
         outputs = llm.generate(prompts, sampling_params)
 
-        def parse_vllm_output(example, idx, vllm_outputs):
+        def parse_vllm_output(example, idx, vllm_outputs, prompts):
             return {
                 "question": example[args.question_col],
                 "answer": example[args.answer_col],
+                "prompt": prompts[idx],  # Store the formatted prompt
                 "input_ids": list(vllm_outputs[idx].prompt_token_ids) + list(vllm_outputs[idx].outputs[0].token_ids),
                 "reply": vllm_outputs[idx].outputs[0].text,
             }
 
         # Apply using map with indices
         dataset = dataset.map(
-            partial(parse_vllm_output, vllm_outputs=outputs),
+            partial(parse_vllm_output, vllm_outputs=outputs, prompts=prompts),
             with_indices=True
         )
 

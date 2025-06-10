@@ -67,7 +67,8 @@ class CausalLMWithUncertaintyLayerClaim(PreTrainedModel):
         uncertainty = self.ue_head(ue_head_input, outputs)
 
         if verified is not None:
-            verified = torch.as_tensor(list(chain(*verified)), device=self.device)  # verified.reshape(-1)
+            device = next(self.parameters()).device
+            verified = torch.as_tensor(list(chain(*verified)), device=device)
             mask = verified != -100
             # uncertainty_raveled = uncertainty[mask]
             uncertainty_raveled = uncertainty.reshape(-1)
@@ -76,9 +77,7 @@ class CausalLMWithUncertaintyLayerClaim(PreTrainedModel):
             # uncertainty_raveled = torch.cat(uncertainty).reshape(-1)[mask]#uncertainty.reshape(-1)[mask]
             uncertainty_labels = verified[mask]
             loss_fct = BCEWithLogitsLoss(
-                pos_weight=torch.Tensor([self._ue_pos_weight]).to(
-                    uncertainty_raveled.device
-                )
+                pos_weight=torch.Tensor([self._ue_pos_weight]).to(device)
             )
             loss = loss_fct(
                 uncertainty_raveled.to(torch.float32),

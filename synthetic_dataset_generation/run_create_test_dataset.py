@@ -1,11 +1,22 @@
 import argparse
 from datasets import load_dataset, Dataset
-
+import os
+import pandas as pd
 
 def main(args):
     with open(args.prompt_file, 'r') as f:
         prompt_template = f.read()
-    dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
+
+    if os.path.isfile(args.dataset_path):
+        if args.dataset_path.endswith('.csv'):
+            df = pd.read_csv(args.dataset_path)
+        else:
+            df = pd.read_json(args.dataset_path, lines=True)
+
+        df_new = df[[args.question_col, args.answer_col]]   
+        dataset = Dataset.from_pandas(df_new)
+    else:
+        dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
     # Slice dataset if needed
     if args.start_index is not None:
         dataset = dataset.select(range(args.start_index, len(dataset)))
@@ -37,8 +48,8 @@ def parse_tuple(s):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Prepare test dataset with prompt formatting.")
-    parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
-                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main')
+    parser.add_argument('--dataset-path', type=str, default="openai/gsm8k,main",
+                        help='Path to the dataset file OR HuggingFace dataset identifier as "dataset,config"')
     parser.add_argument('--dataset-split', type=str, default='test', help='Dataset split to load')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')

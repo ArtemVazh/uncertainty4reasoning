@@ -39,6 +39,12 @@ def generate_targets(dataset, reply_tokens_all):
 
 def main(args):
     dataset = load_from_disk(args.dataset_path)
+    
+    # Apply subset if specified
+    if args.subset is not None:
+        print(f"Using subset of {args.subset} samples from the dataset")
+        dataset = dataset.select(range(min(args.subset, len(dataset))))
+    
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
     prompt = open(args.prompt_file, 'r').read()
 
@@ -52,6 +58,7 @@ def main(args):
 
     print("Verifying claims...")
     stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
+    # import pdb; pdb.set_trace()
     api_key = open(args.api_key_file, 'r').read()
     fact_checker = StepFactCheck(
         prompt_file=args.prompt_file,
@@ -61,6 +68,8 @@ def main(args):
     )
     verified = fact_checker(stats, None)
     print("Done.")
+    # print(verified)
+    # import pdb; pdb.set_trace()
 
     print("Generating targets...")
     result = dataset.to_dict()
@@ -104,6 +113,7 @@ if __name__ == '__main__':
                         help="Path to file containing OpenAI API key.")
     parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
+    parser.add_argument("--subset", type=int, default=None, help="Number of samples to use from the dataset. If not specified, uses the full dataset.")
 
     args = parser.parse_args()
     main(args)

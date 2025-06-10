@@ -40,7 +40,13 @@ from luh.utils import load_any_dataset
 from luh import AutoUncertaintyHead
 
 import logging
+from transformers import modeling_utils
+import os
+import pandas as pd
+from datasets import Dataset
 
+if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
 transformers_logging.set_verbosity_info()
 transformers_logging.enable_default_handler()
 
@@ -64,11 +70,15 @@ def load_model(config):
     config.model.torch_dtype = globals().get(config.model.torch_dtype)
 
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
+    
+    # For multi-GPU DDP training, avoid explicit device_map
+    device_map = None if int(os.environ.get("LOCAL_RANK", -1)) >= 0 else config.model.device_map
+    
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path,
         # torch_dtype=torch.float16,  # Had to comment for Qwen-Math-1.5B
         trust_remote_code=True,
-        device_map=config.model.device_map,
+        device_map=device_map,
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
@@ -535,7 +545,12 @@ def main(config):
         include_num_input_tokens_seen=True,
         gradient_checkpointing=False,
         dataloader_num_workers=1,
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        # Multi-GPU training configurations
+        ddp_find_unused_parameters=False,  # Set to True if you encounter DDP issues
+        dataloader_pin_memory=True,
+        ddp_backend="nccl",  # Use NCCL for multi-GPU on single node
+        local_rank=int(os.environ.get("LOCAL_RANK", -1)),  # For distributed training
         #label_names=["verified"]
     )
 
@@ -622,6 +637,7 @@ def main(config):
             trainer.model.orig_base_model.config.use_cache = False
 
             try:
+                # import pdb; pdb.set_trace()
                 trainer.train(ignore_keys_for_eval=["logits"])
             except KeyboardInterrupt:
                 log.info("Training interrupted.")
