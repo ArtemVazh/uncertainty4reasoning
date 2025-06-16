@@ -40,10 +40,20 @@ def generate_targets(dataset, reply_tokens_all):
 def main(args):
     dataset = load_from_disk(args.dataset_path)
     
-    # Apply subset if specified
+    # Apply start index and subset if specified
+    start_idx = args.start_idx
+    end_idx = len(dataset)
+
+    # Determine the end index based on subset size if provided
     if args.subset is not None:
-        print(f"Using subset of {args.subset} samples from the dataset")
-        dataset = dataset.select(range(min(args.subset, len(dataset))))
+        end_idx = min(start_idx + args.subset, len(dataset))
+        print(f"Using subset of {end_idx - start_idx} samples from index {start_idx} to {end_idx - 1} (exclusive of {end_idx})")
+    elif start_idx != 0:
+        print(f"Skipping the first {start_idx} samples (processing indices {start_idx} to {end_idx - 1})")
+
+    # Only perform selection when needed to avoid unnecessary dataset copy
+    if start_idx != 0 or args.subset is not None:
+        dataset = dataset.select(range(start_idx, end_idx))
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
     prompt = open(args.prompt_file, 'r').read()
@@ -114,6 +124,7 @@ if __name__ == '__main__':
     parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
     parser.add_argument("--subset", type=int, default=None, help="Number of samples to use from the dataset. If not specified, uses the full dataset.")
+    parser.add_argument("--start-idx", type=int, default=0, help="The starting index (offset) in the dataset to begin processing. Use this to skip already processed samples.")
 
     args = parser.parse_args()
     main(args)
