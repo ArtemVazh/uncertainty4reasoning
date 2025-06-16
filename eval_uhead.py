@@ -7,7 +7,8 @@ import uuid
 from hydra.core.hydra_config import HydraConfig
 
 import logging
-
+import os
+os.environ["TRANSFORMERS_NO_SAFE_LOAD"] = "1" 
 log = logging.getLogger("lm_polygraph")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -28,7 +29,9 @@ from lm_polygraph.utils.builder_enviroment_stat_calculator import (
 from lm_polygraph.utils.factory_estimator import FactoryEstimator
 from lm_polygraph.utils.factory_stat_calculator import StatCalculatorContainer
 from synthetic_dataset_generation.utils.step_fact_check import StepFactCheck
-
+from transformers import modeling_utils
+if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
 hydra_config = Path(os.environ.get("HYDRA_CONFIG", ""))
 
 
