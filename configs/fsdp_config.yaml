@@ -1,0 +1,7 @@
+fsdp_sharding_strategy: FULL_SHARD  # match the "full_shard" arg
+fsdp_min_num_params: 10000            # wrap layers >10 k params
+fsdp_offload_params: false            # put params on CPU? (false = keep on GPU)
+fsdp_state_dict_type: full_state_dict # easier saving/loading
+fsdp_sync_module_states: true         # sync on rank-0 before training
+fsdp_use_orig_params: true            # keeps param shapes intact
+fsdp_transformer_layer_cls_to_wrap: Qwen3DecoderLayer  # FIXED: use correct layer class for Qwen3 

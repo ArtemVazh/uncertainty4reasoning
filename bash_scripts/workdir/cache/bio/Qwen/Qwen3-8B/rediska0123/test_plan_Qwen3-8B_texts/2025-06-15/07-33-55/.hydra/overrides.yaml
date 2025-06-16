@@ -1,0 +1,6 @@
+- model.path=Qwen/Qwen3-8B
+- dataset=rediska0123/test_plan_Qwen3-8B_texts
+- stat_calculators.2.cfg.uq_head_path=rcheckpoints/uhead_claim_Qwen3-8B_natural_plan_actual_2
+- +subset=1
+- +num_subsets=10
+- +hf_save_path=awsuineg/ue_manager_gsm8k_Qwen3-8B

@@ -3,6 +3,8 @@ from pathlib import Path
 import os
 import json
 import sys
+import shutil
+import warnings
 from scipy.special import expit
 from sklearn.metrics import (
     roc_auc_score,
@@ -33,6 +35,8 @@ from transformers import (
     TrainerCallback,
     set_seed,
 )
+# DeepSpeed kicks in automatically when this import is present
+import deepspeed
 from transformers import logging as transformers_logging
 
 from causal_lm_with_uncertainty_layer import CausalLMWithUncertaintyLayer
@@ -71,14 +75,35 @@ def load_model(config):
     config.model.torch_dtype = globals().get(config.model.torch_dtype)
 
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
+    
+    # For DeepSpeed, load model on CPU initially to avoid OOM
+    # DeepSpeed will handle the GPU distribution
+    if config.deepspeed_config:
+        device_map = "cpu"
+        log.info("Using CPU device map for initial loading due to DeepSpeed configuration")
+    else:
+        device_map = config.model.device_map
+    
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path,
-        # torch_dtype=torch.float16,  # Had to comment for Qwen-Math-1.5B
+        torch_dtype=config.model.torch_dtype,  # Use the configured dtype
         trust_remote_code=True,
-        device_map=config.model.device_map,
+        device_map=device_map,  # Use CPU for DeepSpeed, config device_map otherwise
+        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
+
+    # Do not enable gradient checkpointing when the base model is frozen (no parameters require gradients).
+    # Enabling it in that case triggers the warning:
+    # "None of the inputs have requires_grad=True" and wastes memory.
+    if any(p.requires_grad for p in base_model.parameters()):
+        if hasattr(base_model, "gradient_checkpointing_enable"):
+            base_model.gradient_checkpointing_enable()
+        base_model.config.use_cache = False  # Disable KV cache when using checkpointing
+    else:
+        # Keep cache enabled for faster inference since we're not using gradient checkpointing
+        base_model.config.use_cache = True
 
     if config.ue_layer.path:
         uq_head = AutoUncertaintyHead.from_pretrained(config.ue_layer.path, base_model)
@@ -112,6 +137,12 @@ def load_model(config):
             output_attention=uq_head.output_attentions,
         )
 
+    # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
+    if hasattr(base_model, 'dtype'):
+        model.ue_head = model.ue_head.to(dtype=base_model.dtype)
+    elif config.model.torch_dtype:
+        model.ue_head = model.ue_head.to(dtype=config.model.torch_dtype)
+
     for name, param in model.named_parameters():
         if "ue_head" in name:
             param.requires_grad = True
@@ -143,6 +174,26 @@ def load_data(config, tokenizer):
         val_dataset_name = config.dataset.validation if hasattr(config.dataset, "validation") else "eval"
         tokenized_data = DatasetDict({"train": tokenized_data, "test": dataset[val_dataset_name]})
 
+    # Add subset functionality for debugging
+    if hasattr(config.dataset, 'subset') and config.dataset.subset is not None:
+        subset_size = config.dataset.subset
+        log.info(f"Using subset of {subset_size} samples for debugging...")
+        
+        # Suppress gradient checkpointing warnings for small subsets
+        # These warnings are expected when batches have no trainable parameters
+        warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True")
+        
+        # Apply subset to training data
+        if len(tokenized_data["train"]) > subset_size:
+            tokenized_data["train"] = tokenized_data["train"].select(range(subset_size))
+            log.info(f"Training dataset reduced to {len(tokenized_data['train'])} samples")
+        
+        # Apply subset to test data (use smaller subset for faster evaluation)
+        test_subset_size = min(subset_size // 4, len(tokenized_data["test"]))  # Use 1/4 of subset size for test
+        if len(tokenized_data["test"]) > test_subset_size and test_subset_size > 0:
+            tokenized_data["test"] = tokenized_data["test"].select(range(test_subset_size))
+            log.info(f"Test dataset reduced to {len(tokenized_data['test'])} samples")
+
     def prompt_tokens(inst):
         PROMPT = open(config.dataset.prompt_path, 'r').read()
         inp = PROMPT.format(q=inst["question"])
@@ -150,8 +201,8 @@ def load_data(config, tokenizer):
         return {"prompt_tokens": input_ids}
 
     tokenized_data = tokenized_data.map(prompt_tokens)
-    log.info(f"Length of the training dataset: {len(tokenized_data['train'])}")
-    log.info(f"Length of the testing dataset: {len(tokenized_data['test'])}")
+    log.info(f"Final length of the training dataset: {len(tokenized_data['train'])}")
+    log.info(f"Final length of the testing dataset: {len(tokenized_data['test'])}")
 
     return tokenized_data
 
@@ -518,10 +569,21 @@ def main(config):
     log.info("Done.")
     log.info(repr(tokenized_data))
 
+    # ------------------------------------------------------------------
+    #  TrainingArguments setup
+    # ------------------------------------------------------------------
+    eval_strategy_cfg = getattr(config.training_arguments, 'eval_strategy', 'epoch')
+    save_strategy_cfg = "epoch" if config.do_save_checkpoints else "no"
+    load_best_model_flag = config.do_save_checkpoints and (eval_strategy_cfg == save_strategy_cfg)
+
+    print("load_best_model_flag", load_best_model_flag)
+    print("eval_strategy_cfg", eval_strategy_cfg)
+    print("save_strategy_cfg", save_strategy_cfg)
+
     train_args = TrainingArguments(
         num_train_epochs=config.training_arguments.num_train_epochs,
         per_device_train_batch_size=config.training_arguments.per_device_train_batch_size,
-        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size, # TODO: add parameter for eval batch size
+        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size,
         gradient_accumulation_steps=config.training_arguments.gradient_accumulation_steps,
         eval_accumulation_steps=4,
         learning_rate=config.training_arguments.learning_rate,
@@ -529,22 +591,29 @@ def main(config):
         max_grad_norm=config.training_arguments.max_grad_norm,
         warmup_ratio=config.training_arguments.warmup_ratio,
         lr_scheduler_type="linear",
-        # fp16=True,  # Had to comment for Qwen2.5-Math-1.5B, othervise it output nan logits and attentions
-        # fp16_full_eval=False,
-        load_best_model_at_end=True if config.do_save_checkpoints else False,
+        bf16=True,  # Mixed precision training
+        load_best_model_at_end=load_best_model_flag,
         metric_for_best_model="pr_auc",
-        eval_strategy="epoch",
+        eval_strategy=eval_strategy_cfg,
         logging_strategy="epoch",
-        save_strategy="epoch" if config.do_save_checkpoints else "no",
+        save_strategy=save_strategy_cfg,
         output_dir=Path(output_dir) / "outputs",
         logging_dir=Path(output_dir) / "transformers_logs",
         report_to=config.report_to if config.report_to else None,
         include_num_input_tokens_seen=True,
-        gradient_checkpointing=False,
+        gradient_checkpointing=False,  # Disable gradient checkpointing as it's not supported
+        deepspeed=config.deepspeed_config,
         dataloader_num_workers=1,
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        optim="adamw_torch_fused",  # Use fused AdamW optimizer for better memory efficiency
+        save_total_limit=config.training_arguments.save_total_limit,
         #label_names=["verified"]
     )
+
+    # Remove the gradient checkpointing enable call from the base model
+    # Don't re-enable cache when using DeepSpeed as it can cause issues
+    if hasattr(model.orig_base_model, "config") and not config.deepspeed_config:
+        model.orig_base_model.config.use_cache = True  # Re-enable KV-cache since we're not using gradient checkpointing
 
     if model.ue_head.model_type == "claim":
         def dataset_filter(inst):
@@ -560,7 +629,8 @@ def main(config):
         data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
     
     callbacks = [LoggerCallback()]
-    if config.do_save_checkpoints:
+    if load_best_model_flag:
+        # Only attach EarlyStopping when evaluation runs and best-model tracking is enabled
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=3))
 
     if model.ue_head.model_type == "claim":
@@ -629,28 +699,81 @@ def main(config):
             trainer.model.orig_base_model.config.use_cache = False
 
             try:
-                trainer.train(ignore_keys_for_eval=["logits"])
+                # Resume training if a checkpoint path has been provided via Hydra override
+                if hasattr(config, "resume_from_checkpoint") and config.resume_from_checkpoint:
+                    log.info(f"Resuming training from checkpoint: {config.resume_from_checkpoint}")
+                    trainer.train(resume_from_checkpoint=str(config.resume_from_checkpoint),
+                                 ignore_keys_for_eval=["logits"])
+                else:
+                    trainer.train(ignore_keys_for_eval=["logits"])
             except KeyboardInterrupt:
                 log.info("Training interrupted.")
                 
             log.info("Done with training.")
+            print("trainer.is_world_process_zero()", trainer.is_world_process_zero())
+            print("config.do_save_final_model", config.do_save_final_model)
+            
+            if config.do_save_final_model or trainer.state.best_model_checkpoint:
+                log.info("Saving UE-head copies (final & best where applicable)...")
 
-            if config.do_save_final_model:
-                log.info("Saving model...")
-                save_path = Path(output_dir) / "model"
-                trainer.model.ue_head.save(save_path)
-                # # trainer.save_model(Path(output_dir) / "training_dir" / "final_model")
-                # torch.save(
-                #     trainer.model.ue_head.state_dict(),
-                #     Path(output_dir) / "ue_layer.pth",
-                # )
-                log.info(f"Saved to: {save_path}")
-                if getattr(config, 'save_dir', None) is not None:
-                    trainer.model.ue_head.save(Path(config.save_dir))
-                    log.info(f"Saved to: {config.save_dir}.")
-                if getattr(config, 'hf_save_path', None) is not None:
-                    trainer.model.ue_head.push_to_hub(config.hf_save_path)
-                    log.info(f"Saved to HF: {config.hf_save_path}.")
+                # Always save the *current* model (after `trainer.train()` this is the best
+                # one when `load_best_model_at_end=True`).  We store it under "model/" so
+                # existing code that expects that folder keeps working.
+                final_path = Path(output_dir) / "model"
+
+                # If a best-checkpoint directory is known, also store an explicit copy
+                # under "best_model/" for clarity.
+                best_path = None
+                if trainer.state.best_model_checkpoint:
+                    best_path = Path(output_dir) / "best_model"
+
+                # ───────────────────────────────────────────────────────────
+                # DeepSpeed-aware save: gather shards on every rank, write only on rank-0
+                # ───────────────────────────────────────────────────────────
+                if getattr(trainer, "deepspeed", None):
+                    print("Gathered parameters...")
+                    with deepspeed.zero.GatheredParameters(trainer.model.ue_head.parameters()):
+                        if trainer.is_world_process_zero():
+                            trainer.model.ue_head.save(final_path)
+                            print("Saved final UE-head to: ", final_path)
+                            if best_path is not None:
+                                trainer.model.ue_head.save(best_path)
+                                print("Saved best UE-head to: ", best_path)
+                            # Copy to user-specified directory as well
+                            if getattr(config, 'save_dir', None):
+                                user_dir = Path(config.save_dir)
+                                user_dir.mkdir(parents=True, exist_ok=True)
+                                trainer.model.ue_head.save(user_dir / "model")
+                                print("Saved final UE-head to: ", user_dir / "model")
+                                if best_path is not None:
+                                    trainer.model.ue_head.save(user_dir / "best_model")
+                                    print("Saved best UE-head to: ", user_dir / "best_model")
+                else:
+                    if trainer.is_world_process_zero():
+                        print("Saving UE head to local directory...")
+                        trainer.model.ue_head.save(final_path)
+                        print("Saved final UE-head to: ", final_path)
+                        try:
+                            if best_path is not None:
+                                trainer.model.ue_head.save(best_path)
+                                print("Saved best UE-head to: ", best_path)
+                        except Exception as e:
+                            log.error(f"Error saving UE head to {best_path}: {e}")
+                        # Copy to user-specified directory as well
+                        if getattr(config, 'save_dir', None):
+                            user_dir = Path(config.save_dir)
+                            user_dir.mkdir(parents=True, exist_ok=True)
+                            trainer.model.ue_head.save(user_dir / "model")
+                            print("Saved final UE-head to: ", user_dir / "model")
+                            if best_path is not None:
+                                trainer.model.ue_head.save(user_dir / "best_model")
+                                print("Saved best UE-head to: ", user_dir / "best_model")
+
+                # Only rank-0 should continue with extra copies / Hub push to avoid races
+                if trainer.is_world_process_zero():
+                    if getattr(config, 'hf_save_path', None) is not None:
+                        trainer.model.ue_head.push_to_hub(config.hf_save_path)
+                        log.info(f"Saved to HF: {config.hf_save_path}.")
 
         if config.do_eval:
             log.info("Evaluating...")
@@ -672,4 +795,8 @@ def main(config):
             
 
 if __name__ == "__main__":
+    # DeepSpeed passes a '--local_rank' flag (e.g. '--local_rank=0') to each spawned process.
+    # Hydra treats unknown CLI options as errors, so we remove any occurrence of this flag
+    # before invoking the hydra-wrapped main() entrypoint.
+    sys.argv = [arg for arg in sys.argv if not arg.startswith("--local_rank")]
     main()

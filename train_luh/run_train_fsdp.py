@@ -33,6 +33,15 @@ from transformers import (
     TrainerCallback,
     set_seed,
 )
+# <change_start> ── swap DeepSpeed import for FSDP helpers ─────────────────────
+# import deepspeed
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP          # new
+# Attempt to import default_auto_wrap_policy; older Torch versions may not expose it
+try:
+    from torch.distributed.fsdp.wrap import default_auto_wrap_policy         # new
+except ImportError:  # Fallback for older PyTorch versions
+    default_auto_wrap_policy = None
+# <change_end>
 from transformers import logging as transformers_logging
 
 from causal_lm_with_uncertainty_layer import CausalLMWithUncertaintyLayer
@@ -45,6 +54,11 @@ from transformers import modeling_utils
 import os
 import pandas as pd
 from datasets import Dataset
+# Ensure project root (two levels up) is on PYTHONPATH so that local 'luh' package can be imported when the code is run without installing the package.
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+# Now the following local import works even if the package isn't installed globally
 
 if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
     modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
@@ -73,12 +87,18 @@ def load_model(config):
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path,
-        # torch_dtype=torch.float16,  # Had to comment for Qwen-Math-1.5B
+        torch_dtype=config.model.torch_dtype,  # Use the configured dtype
         trust_remote_code=True,
-        device_map=config.model.device_map,
+        # device_map removed for FSDP compatibility - FSDP handles device placement
+        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
+
+    # Enable gradient checkpointing in the base model
+    if hasattr(base_model, "gradient_checkpointing_enable"):
+        base_model.gradient_checkpointing_enable()
+    base_model.config.use_cache = False  # Required for gradient checkpointing
 
     if config.ue_layer.path:
         uq_head = AutoUncertaintyHead.from_pretrained(config.ue_layer.path, base_model)
@@ -518,10 +538,35 @@ def main(config):
     log.info("Done.")
     log.info(repr(tokenized_data))
 
+    # ------------------------------------------------------------------
+    # Resolve FSDP config (supports YAML path or inline dict) and ensure it
+    # complies with HF TrainingArguments requirements ("min_num_params" and
+    # "transformer_layer_cls_to_wrap" are mutually exclusive).
+    # ------------------------------------------------------------------
+
+    resolved_fsdp_config = getattr(config, "fsdp_config", None)
+    if isinstance(resolved_fsdp_config, str) and str(resolved_fsdp_config).endswith((".yml", ".yaml")):
+        resolved_fsdp_config = OmegaConf.to_container(OmegaConf.load(resolved_fsdp_config), resolve=True)
+
+    # Drop the mutually-exclusive key if both are supplied (prefer the layer class
+    # based wrapping rule and remove the size-threshold rule).
+    if isinstance(resolved_fsdp_config, dict):
+        both_keys = (
+            ("fsdp_min_num_params" in resolved_fsdp_config or "min_num_params" in resolved_fsdp_config)
+            and (
+                "fsdp_transformer_layer_cls_to_wrap" in resolved_fsdp_config
+                or "transformer_layer_cls_to_wrap" in resolved_fsdp_config
+            )
+        )
+        if both_keys:
+            # Remove whichever flavour of the threshold key exists.
+            resolved_fsdp_config.pop("fsdp_min_num_params", None)
+            resolved_fsdp_config.pop("min_num_params", None)
+
     train_args = TrainingArguments(
         num_train_epochs=config.training_arguments.num_train_epochs,
         per_device_train_batch_size=config.training_arguments.per_device_train_batch_size,
-        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size, # TODO: add parameter for eval batch size
+        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size,
         gradient_accumulation_steps=config.training_arguments.gradient_accumulation_steps,
         eval_accumulation_steps=4,
         learning_rate=config.training_arguments.learning_rate,
@@ -529,8 +574,7 @@ def main(config):
         max_grad_norm=config.training_arguments.max_grad_norm,
         warmup_ratio=config.training_arguments.warmup_ratio,
         lr_scheduler_type="linear",
-        # fp16=True,  # Had to comment for Qwen2.5-Math-1.5B, othervise it output nan logits and attentions
-        # fp16_full_eval=False,
+        bf16=True,  # Mixed precision training
         load_best_model_at_end=True if config.do_save_checkpoints else False,
         metric_for_best_model="pr_auc",
         eval_strategy="epoch",
@@ -540,11 +584,22 @@ def main(config):
         logging_dir=Path(output_dir) / "transformers_logs",
         report_to=config.report_to if config.report_to else None,
         include_num_input_tokens_seen=True,
-        gradient_checkpointing=False,
+        gradient_checkpointing=False,  # Disable gradient checkpointing as it's not supported
+        # <change_start> ── remove DeepSpeed, enable FSDP ──────────────────────
+        # deepspeed=config.deepspeed_config,
+        fsdp="full_shard auto_wrap",               # enable FSDP
+        # Use the resolved FSDP config that has conflict resolution applied
+        fsdp_config=resolved_fsdp_config,
+        # <change_end>
         dataloader_num_workers=1,
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        optim="adamw_torch_fused",  # Use fused AdamW optimizer for better memory efficiency
         #label_names=["verified"]
     )
+
+    # Remove the gradient checkpointing enable call from the base model
+    if hasattr(model.orig_base_model, "config"):
+        model.orig_base_model.config.use_cache = True  # Re-enable KV-cache since we're not using gradient checkpointing
 
     if model.ue_head.model_type == "claim":
         def dataset_filter(inst):
@@ -672,4 +727,8 @@ def main(config):
             
 
 if __name__ == "__main__":
+    # DeepSpeed passes a '--local_rank' flag (e.g. '--local_rank=0') to each spawned process.
+    # Hydra treats unknown CLI options as errors, so we remove any occurrence of this flag
+    # before invoking the hydra-wrapped main() entrypoint.
+    sys.argv = [arg for arg in sys.argv if not arg.startswith("--local_rank")]
     main()

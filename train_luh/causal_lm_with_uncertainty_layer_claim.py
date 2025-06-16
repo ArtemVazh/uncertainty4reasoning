@@ -67,7 +67,13 @@ class CausalLMWithUncertaintyLayerClaim(PreTrainedModel):
         uncertainty = self.ue_head(ue_head_input, outputs)
 
         if verified is not None:
-            device = next(self.parameters()).device
+            # Fix device handling for multi-GPU training and DeepSpeed
+            try:
+                device = next(self.parameters()).device
+            except StopIteration:
+                # Fallback for DeepSpeed ZeRO-3 where parameters might be offloaded
+                device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
+            
             verified = torch.as_tensor(list(chain(*verified)), device=device)
             mask = verified != -100
             # uncertainty_raveled = uncertainty[mask]
