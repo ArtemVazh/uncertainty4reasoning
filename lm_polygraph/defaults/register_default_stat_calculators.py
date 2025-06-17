@@ -32,6 +32,8 @@ def register_default_stat_calculators(
         hf_cache: Optional[str] = None,
         blackbox_supports_logprobs: bool = False,
         output_attentions: bool = True,
+        deberta_batch_size: int = 100,
+        deberta_device: str | None = None,
 ) -> List[StatCalculatorContainer]:
     """
     Specifies the list of the default stat_calculators that could be used in the evaluation scripts and
@@ -55,8 +57,8 @@ def register_default_stat_calculators(
     nli_config = {
         "deberta_path": deberta_model_path,
         "hf_cache": hf_cache,
-        "batch_size": 1000,
-        "device": None,
+        "batch_size": deberta_batch_size,
+        "device": deberta_device,
     }
 
     _register(InitialStateCalculator)

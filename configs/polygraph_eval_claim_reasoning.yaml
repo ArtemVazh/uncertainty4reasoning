@@ -32,9 +32,9 @@ generation_metrics: [{
 estimators:
   - name: RandomBaselineClaim
   - name: MaximumClaimProbability
-  - name: ClaimConditionedProbabilityClaim
-    cfg:
-      nli_context: "fact_pref"
+#  - name: ClaimConditionedProbabilityClaim  # quite computationally intensive
+#    cfg:
+#      nli_context: "fact_pref"
   - name: MaxTokenEntropyClaim
   - name: PerplexityClaim
   - name: luh.builder_LuhClaimEstimatorDummy
@@ -91,7 +91,8 @@ stat_calculators:
 max_new_tokens: 256
 ignore_exceptions: false
 language: en
-batch_size: 1
+batch_size: 16
+deberta_batch_size: 100
 seed:
     - 1
 cache_path: ./workdir/cache

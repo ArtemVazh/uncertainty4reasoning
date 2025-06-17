@@ -183,6 +183,8 @@ def get_stat_calculator_names(config):
             model_type,
             language,
             hf_cache,
+            deberta_batch_size=getattr(config, "deberta_batch_size", 100),
+            deberta_device=getattr(config, "deberta_device", None),
         )
 
     for stat_calculator in config.stat_calculators:
