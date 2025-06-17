@@ -1,7 +1,6 @@
 import torch
 import argparse
 import numpy as np
-from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from datasets import load_dataset
 from functools import partial
@@ -25,14 +24,14 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
             inputs,
             num_return_sequences=1,
             generation_config=generation_config,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
             temperature=0.,
             max_new_tokens=256,
             do_sample=False,
             repetition_penalty=1.,
             diversity_penalty=0.,
             length_penalty=1.,
-            stop_strings=['\n\n', '}\n'],
+            stop_strings=[tokenizer.eos_token],
             tokenizer=tokenizer,
         )
     reply = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
@@ -101,7 +100,7 @@ def parse_args():
 def main(args):
     prompt = open(args.prompt_file, 'r').read()
 
-    dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)['test']
+    dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split[0]]
     dataset = dataset.select(range(args.n_samples))
     generation_config = GenerationConfig.from_pretrained(args.model_path)
 
@@ -123,10 +122,10 @@ def main(args):
             seed=42,
             max_tokens=256,
             repetition_penalty=1.,
-            stop=['\n\n', '}\n'],
+            stop=["<|im_end|>", "<|endoftext|>"],
             include_stop_str_in_output=True,
         )
-        sampling_params.update_from_generation_config(generation_config)
+        sampling_params.update_from_generation_config(generation_config.to_dict())
 
         llm = LLM(
             model=args.model_path,
@@ -152,8 +151,8 @@ def main(args):
             partial(parse_vllm_output, vllm_outputs=outputs),
             with_indices=True
         )
-
-    print_stats(dataset, args)
+    if 'gsm8k' in args.dataset_path[0]:
+        print_stats(dataset, args)
 
     dataset.save_to_disk(args.save_path)
     print("Done.")

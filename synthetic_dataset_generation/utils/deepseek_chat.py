@@ -4,6 +4,7 @@ import sys
 import time
 import logging
 import diskcache as dc
+import threading
 
 log = logging.getLogger()
 
@@ -29,18 +30,19 @@ class DeepSeekChat:
         if not os.path.exists(cache_path):
             os.makedirs(cache_path)
         self.wait_times = wait_times
-
-    def ask(self, message: str) -> str:
+        
+        # Initialize cache with proper settings
         cache_settings = dc.DEFAULT_SETTINGS.copy()
         cache_settings["eviction_policy"] = "none"
         cache_settings["size_limit"] = int(1e12)
         cache_settings["cull_limit"] = 0
-        responses = dc.Cache(self.cache_path, **cache_settings)
+        self.cache = dc.Cache(self.cache_path, **cache_settings)
+        self._lock = threading.Lock()
 
-        reply = ''
-        if (self.model, message) in responses:
-            reply = responses[(self.model, message)]
-
+    def ask(self, message: str) -> str:
+        # First try to get from cache without lock
+        reply = self.cache.get((self.model, message), '')
+        
         if reply == '':
             if self.api_key is None:
                 raise Exception("Cant ask DeepSeek without token.")
@@ -52,8 +54,9 @@ class DeepSeekChat:
                 reply = ""
             else:
                 reply = chat.choices[0].message.content
-            responses[(self.model, message)] = reply
-            responses.close()
+            # Only lock when writing to cache
+            with self._lock:
+                self.cache[(self.model, message)] = reply
 
         if any(x in reply.lower() for x in ["please provide", "to assist you", "as an ai language model"]):
             return ""
@@ -80,3 +83,8 @@ class DeepSeekChat:
         except Exception as e:
             sys.stderr.write(f'Error: {e}')
             return None
+
+    def __del__(self):
+        """Cleanup method to properly close the cache when the instance is destroyed."""
+        if hasattr(self, 'cache'):
+            self.cache.close()

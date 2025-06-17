@@ -13,3 +13,7 @@ huggingface-hub>=0.30.2
 parse>=1.20.0
 rouge_score
 nltk>=3.9.1
+spacy
+sacrebleu
+evaluate
+bert_score
