@@ -20,7 +20,10 @@ def is_correct_answer(generated_output: str, gold_answer: str) -> bool:
     gold = parse_ans(gold_answer)
     if pred is None or gold is None:
         return False
-    return np.isclose(pred, gold).item()
+    try:
+        return np.isclose(pred, gold).item()
+    except Exception as e:
+        return False
 
 
 def process_stats(stats):
@@ -132,7 +135,7 @@ def update_bestofn(
         save_frequency: int | None,
         verbose: bool = True,
 ):
-    results = torch.load(save_path)
+    results = torch.load(save_path, weights_only=False)
     n = len(results[0]["sample_texts"])
     _bestofn(
         dataset, model, estimators, stat_calculators,
