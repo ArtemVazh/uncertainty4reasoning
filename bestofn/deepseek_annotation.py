@@ -88,5 +88,5 @@ if __name__ == '__main__':
         l = len(b[i]["sample_texts"])
         b[i]["deepseek_annotations"] = annotations[:l]
         annotations = annotations[l:]
-    # log.info(f'Saving to {args.save_path}')
-    # torch.save(b, args.save_path)
+    log.info(f'Saving to {args.save_path}')
+    torch.save(b, args.save_path)

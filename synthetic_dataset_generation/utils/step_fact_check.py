@@ -1,3 +1,4 @@
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from parse import parse
 
@@ -22,7 +23,10 @@ class StepFactCheck(GenerationMetric):
         with open(prompt_file, 'r') as f:
             self.prompt = f.read()
 
-        self.chat = DeepSeekChat(cache_path, model=model, api_key=api_key, wait_times=wait_times)
+        if 'deepseek' in model:
+            self.chat = DeepSeekChat(cache_path,  model=model, api_key=api_key, wait_times=wait_times)
+        else:
+            self.chat = OpenAIChat(model, cache_path=cache_path)
 
         # use this for OpenAI
         # self.chat = DeepSeekChat(api_base=None, model='gpt-4o', cache_path=cache_path, api_key=api_key, wait_times=wait_times)
@@ -97,6 +101,8 @@ OUTPUT LIST:
             return []
         orig_reply = reply
         reply = reply.strip().replace(' ', '').replace('Step', '')
+        if '```python' in reply:
+            reply = reply.split('```python')[-1].split('```')[0].strip()
         if reply.startswith('[') and reply.endswith(']'):
             reply = reply[1:-1]
         try:
@@ -151,3 +157,4 @@ OUTPUT LIST:
                 claim_labels.append(future.result())
 
         return claim_labels
+

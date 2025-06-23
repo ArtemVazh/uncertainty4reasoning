@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import openai
 import os
 import sys
@@ -13,7 +14,7 @@ class DeepSeekChat:
     def __init__(
             self,
             cache_path: str,
-            api_base: str = "https://api.deepseek.com/v1",
+            api_base: str | None = "https://api.deepseek.com/v1",
             model: str = "deepseek-reasoner",
             api_key: str | None = None,
             wait_times: tuple = (5, 10, 30, 60, 120),
