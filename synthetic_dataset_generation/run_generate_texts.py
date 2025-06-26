@@ -27,7 +27,7 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
             inputs.repeat(args.n_samples_per_input, 1),
             num_return_sequences=args.n_samples_per_input,
             generation_config=generation_config,
-            pad_token_id=tokenizer.pad_token_id,
+            pad_token_id=tokenizer.eos_token_id,
             temperature=args.temperature,
             top_k=args.top_k,
             top_p=args.top_p,

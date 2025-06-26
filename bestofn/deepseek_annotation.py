@@ -72,7 +72,7 @@ if __name__ == '__main__':
     parser.add_argument('--n-threads', type=int, default=1, help="Number of threads to use")
     args = parser.parse_args()
 
-    b = torch.load(args.save_path)
+    b = torch.load(args.save_path, weights_only=False)
     problems, solutions = [], []
     for r in b:
         if "sample_texts" not in r:
