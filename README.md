@@ -73,7 +73,7 @@ python train_luh/run_train_luh.py \
   dataset.path=hf:rediska0123/train_gsm8k_Qwen3-1.7B \
   dataset.prompt_path=configs/qwen3_prompt.txt \
   training_arguments.num_train_epochs=30 \
-  +save_dir=/cluster/project/sachan/ekaterina/.cache/uhead_claim_Qwen3-1.7B_gsm8k \
+  +save_dir=/cluster/project/sachan/ekaterina/.cache/uhead_Qwen3-1.7B_gsm8k \
   +hf_save_path=rediska0123/uhead_Qwen3-1.7B_gsm8k
 ```
 
@@ -88,7 +88,7 @@ HYDRA_CONFIG=configs/polygraph_eval_claim_reasoning.yaml \
     python eval_uhead.py \
     model.path=Qwen/Qwen3-1.7B \
     dataset=rediska0123/test_gsm8k_Qwen3-1.7B \
-    stat_calculators.2.cfg.uq_head_path=rediska0123/uhead_claim_Qwen3-1.7B_gsm8k \
+    stat_calculators.2.cfg.uq_head_path=rediska0123/uhead_Qwen3-1.7B_gsm8k \
     +hf_save_path=rediska0123/ue_manager_gsm8k_Qwen3-1.7B
 ```
 

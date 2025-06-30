@@ -32,9 +32,9 @@ generation_metrics: [{
 estimators:
   - name: RandomBaselineClaim
   - name: MaximumClaimProbability
-  - name: ClaimConditionedProbabilityClaim
-    cfg:
-      nli_context: "fact_pref"
+  # - name: ClaimConditionedProbabilityClaim
+  #   cfg:
+  #     nli_context: "fact_pref"
   - name: MaxTokenEntropyClaim
   - name: PerplexityClaim
   - name: luh.builder_LuhClaimEstimatorDummy
@@ -57,7 +57,7 @@ stat_calculators:
       predict_token_uncertainties: false
       uq_head_path: "rediska0123/uhead_Qwen2.5-Math-7B"
       args_generate:
-        max_new_tokens: 256
+        max_new_tokens: 1024
         min_new_tokens: 2
         temperature: 0.
         do_sample: false
@@ -88,10 +88,11 @@ stat_calculators:
     stats:
       - "uncertainty_claim_logits"
 
-max_new_tokens: 256
+max_new_tokens: 1024
 ignore_exceptions: false
 language: en
 batch_size: 1
+deberta_batch_size: 100
 seed:
     - 1
 cache_path: ./workdir/cache

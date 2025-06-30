@@ -34,7 +34,7 @@ from lm_polygraph.defaults.register_default_stat_calculators import (
     register_default_stat_calculators,
 )
 from lm_polygraph.utils.common import flatten_results
-from huggingface_hub import HfApi, Repository, hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 
 import logging
 
@@ -256,6 +256,13 @@ class UEManager:
                 if self.log_time:
                     start_time = time.time()
                     log.info(f"Calculating {stat_calculator}...")
+
+                # print(f'stat_calculator: {stat_calculator}')
+                # print(f'batch_stats: {batch_stats}')
+                # print(f'inp_texts: {inp_texts}')
+                # print(f'self.model: {self.model}')
+                # print(f'self.max_new_tokens: {self.max_new_tokens}')
+                # import pdb; pdb.set_trace()
                 new_stats = stat_calculator(
                     batch_stats, inp_texts, self.model, self.max_new_tokens
                 )
@@ -476,17 +483,26 @@ class UEManager:
         )
 
     def push_to_hub(self, repo_id: str | None = None, token: str | None = None):
+        """
+        Push the UEManager to Hugging Face Hub using the newer HfApi approach.
+        """
         api = HfApi()
         api.create_repo(repo_id=repo_id, exist_ok=True, token=token)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-            repo = Repository(local_dir=str(tmp_path), clone_from=repo_id, use_auth_token=token)
-            output_dir = tmp_path
-            self.save(output_dir)
-            repo.git_add(auto_lfs_track=True)
-            repo.git_commit("Upload UEManager")
-            repo.git_push()
+            # Save the manager to the temporary directory
+            self.save(tmp_path)
+            
+            # Upload the file using HfApi
+            api.upload_file(
+                path_or_fileobj=tmp_path / "ue_manager.pth",
+                path_in_repo="ue_manager.pth",
+                repo_id=repo_id,
+                token=token,
+                commit_message="Upload UEManager"
+            )
+        
         log.info(f"Manager pushed to Hugging Face Hub: https://huggingface.co/{repo_id}")
 
     @staticmethod

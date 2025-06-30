@@ -120,7 +120,7 @@ def main(args):
 
         builder_env_stat_calc = BuilderEnvironmentStatCalculator(model=model)
         available_stat_calculators = get_stat_calculator_names(args)
-
+        print(args.max_new_tokens)
         man = UEManager(
             data=dataset,
             model=model,
@@ -136,7 +136,6 @@ def main(args):
             max_new_tokens=args.max_new_tokens,
             log_time=getattr(args, "log_time", False),
         )
-
         try:
             man()
         except Exception as e:
@@ -147,11 +146,11 @@ def main(args):
             man.save(save_path)
             if hasattr(args, "hf_save_path"):
                 man.push_to_hub(args.hf_save_path)
-
+        
         if hasattr(args, "report_to_wandb") and args.report_to_wandb:
             wandb.log({str(k) : v for k, v in man.gen_metrics})
             wandb.log({str(k) : v for k, v in man.metrics.items()})
-
+            
     if hasattr(args, "report_to_wandb") and args.report_to_wandb:
         wandb.finish()
 
@@ -162,11 +161,21 @@ def get_ue_metrics(args):
         PredictionRejectionArea(),
         PredictionRejectionArea(max_rejection=0.5),
     ]
-    if getattr(args, "use_claim_ue", False):
-        ue_metrics += [
-            ROCAUC(),
-            PRAUC(),
-        ]
+    
+    # Only add ROC AUC metrics if we have generation_metrics defined that produce binary labels
+    # For example, StepFactCheck or other fact-checking metrics
+    if getattr(args, "use_claim_ue", False) and hasattr(args, "generation_metrics") and args.generation_metrics:
+        # Check if any of the generation metrics are fact-checking metrics that produce binary labels
+        has_binary_metrics = any(
+            metric.get("name") in ["StepFactCheck", "OpenAIFactCheck"] 
+            for metric in args.generation_metrics
+        )
+        if has_binary_metrics:
+            ue_metrics += [
+                ROCAUC(),
+                PRAUC(),
+            ]
+    
     return ue_metrics
 
 
@@ -186,6 +195,8 @@ def get_stat_calculator_names(config):
             model_type,
             language,
             hf_cache,
+            deberta_batch_size=getattr(config, "deberta_batch_size", 100),
+            deberta_device=getattr(config, "deberta_device", None),
         )
 
     for stat_calculator in config.stat_calculators:
@@ -199,7 +210,7 @@ def get_stat_calculator_names(config):
             builder=stat_calculator.builder,
         )
         all_stat_calculators.append(sc)
-
+    print(f'all_stat_calculators: {all_stat_calculators}')
     return all_stat_calculators
 
 
@@ -233,18 +244,18 @@ def get_generation_metrics(args):
             ),
             AlignScore(target_is_claims=False if args.task == "ats" else True),
         ]
-        if getattr(args.model, "type", "Whitebox") != "Blackbox":
-            if getattr(args, "use_claim_ue", False):
-                result += [
-                    OpenAIFactCheck(
-                        cache_path=args.cache_path,
-                        language=getattr(args, "language", "en"),
-                        n_threads=getattr(args, "n_threads", 1),
-                    )
-                ]
-        if args.task == "nmt":
-            ignore_regex = getattr(args, "source_ignore_regex", None)
-            result += [Comet(source_ignore_regex=ignore_regex)]
+        # if getattr(args.model, "type", "Whitebox") != "Blackbox":
+        #     if getattr(args, "use_claim_ue", False):
+        #         result += [
+        #             OpenAIFactCheck(
+        #                 cache_path=args.cache_path,
+        #                 language=getattr(args, "language", "en"),
+        #                 n_threads=getattr(args, "n_threads", 1),
+        #             )
+        #         ]
+        # if args.task == "nmt":
+        #     ignore_regex = getattr(args, "source_ignore_regex", None)
+        #     result += [Comet(source_ignore_regex=ignore_regex)]
     else:
         result = []
         for metric in generation_metrics:

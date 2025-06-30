@@ -162,7 +162,7 @@ def main(args):
             n=1,
             temperature=0,
             seed=42,
-            max_tokens=256,
+            max_tokens=1024,
             repetition_penalty=1.,
             stop=['\n\n', '}\n'],
             include_stop_str_in_output=True,

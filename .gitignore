@@ -177,3 +177,8 @@ configs/deepseek_api_key.txt
 
 runs/
 configs/scores_*.json
+# Project-specific directories
+wandb/
+workdir/
+logs/
+outputs/
