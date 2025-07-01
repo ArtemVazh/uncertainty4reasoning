@@ -23,7 +23,6 @@ class DeepSeekChat:
         self.api_key = api_key
         self.api_base = api_base
         self.model = model
-
         if cache_path is None:
             cache_path = '~/.cache'
         self.cache_path = os.path.join(cache_path, "deepseek_chat_cache.diskcache")
@@ -39,7 +38,7 @@ class DeepSeekChat:
         self.cache = dc.Cache(self.cache_path, **cache_settings)
         self._lock = threading.Lock()
 
-    def ask(self, message: str) -> str:
+    def ask(self, message: str, json_output=False) -> str:
         # First try to get from cache without lock
         reply = self.cache.get((self.model, message), '')
         
@@ -49,7 +48,7 @@ class DeepSeekChat:
             messages = [
                 {"role": "user", "content": message},
             ]
-            chat = self._send_request(messages)
+            chat = self._send_request(messages, json_output)
             if chat is None:
                 reply = ""
             else:
@@ -63,12 +62,14 @@ class DeepSeekChat:
 
         return reply
 
-    def _send_request(self, messages):
+    def _send_request(self, messages, json_output=False):
         chat_args = {
             'model': self.model,
             'messages': messages,
             'temperature': 0.6,
         }
+        if json_output:
+            chat_args['response_format'] = {'type': 'json_object'}
         for i in range(len(self.wait_times)):
             try:
                 return openai.OpenAI(base_url=self.api_base, api_key=self.api_key).chat.completions.create(**chat_args)

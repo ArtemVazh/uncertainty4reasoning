@@ -118,6 +118,14 @@ def load_data(config, tokenizer):
     log.info(f"Loading dataset {config.dataset.path}...")
     dataset = load_any_dataset(config.dataset.path, config)
 
+    if config.dataset.label_key_claim != "verified":
+        dataset = dataset.remove_columns(["verified"])
+        dataset = dataset.rename_column(config.dataset.label_key_claim, "verified")
+
+    if config.dataset.label_key_token != "uncertainty_labels":
+        dataset = dataset.remove_columns(["uncertainty_labels"])
+        dataset = dataset.rename_column(config.dataset.label_key_token, "uncertainty_labels")
+
     if type(dataset) is not DatasetDict:
         dataset = DatasetDict({"train": dataset})
 
