@@ -1,17 +1,16 @@
 import torch
 import argparse
-import copy
 import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, load_from_disk, Dataset
 from functools import partial
 from collections import defaultdict
 from nltk.translate.bleu_score import sentence_bleu
 from rouge_score import rouge_scorer
 from utils import parse_ans
-from vllm import LLM, SamplingParams
-from itertools import chain
-from tqdm import tqdm
+from transformers import modeling_utils
+if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
 
 GPU_NUM = torch.cuda.device_count()
 
@@ -24,31 +23,25 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
     inputs = inputs.to(model.device)
     with torch.no_grad():
         outputs = model.generate(
-            inputs.repeat(args.n_samples_per_input, 1),
-            num_return_sequences=args.n_samples_per_input,
+            inputs,
+            num_return_sequences=1,
             generation_config=generation_config,
             pad_token_id=tokenizer.pad_token_id,
             temperature=args.temperature,
-            top_k=args.top_k,
             top_p=args.top_p,
-            max_new_tokens=256,
-            do_sample=args.temperature > 0,
+            top_k=args.top_k,
+            max_new_tokens=1024,
+            do_sample=False,
             repetition_penalty=1.,
             diversity_penalty=0.,
             length_penalty=1.,
             stop_strings=[tokenizer.eos_token],
             tokenizer=tokenizer,
         )
-    replies = []
-    for i in range(args.n_samples_per_input):
-        reply_text = tokenizer.decode(outputs[i][inputs.shape[1]:], skip_special_tokens=True)
-        reply = copy.deepcopy(inst)
-        reply.update({
-            "input_ids": outputs[i].tolist(),
-            "reply": reply_text,
-        })
-        replies.append(reply)
-    return replies
+    reply = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+    inst["input_ids"] = outputs[0]
+    inst["reply"] = reply
+    return inst
 
 
 def jaccard_similarity(a, b):
@@ -89,7 +82,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Create generation texts for model.")
 
     parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
-                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main"')
+                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main". Start with "local" to load from local path, e.g. "local,./scienceqa_missing_images"')
     parser.add_argument('--dataset-split', type=parse_tuple, default="test", help='Dataset split')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
@@ -105,20 +98,38 @@ def parse_args():
     parser.add_argument('--hf-cache', type=str, default=None, help='Path to the HuggingFace cache directory')
     parser.add_argument('--vllm', action='store_true', default=False,
                         help='Whether to use vLLM as the inference backend')
-
-    parser.add_argument('--temperature', type=float, default=0, help='Temperature to generate training data with')
-    parser.add_argument('--top-k', type=int, default=None, help='Top-k sampling')
-    parser.add_argument('--top-p', type=float, default=1.0, help='Top-p (nucleus) sampling')
-    parser.add_argument('--n-samples-per-input', type=int, default=1,
-                        help='How many completions to generate per input')
-
+    parser.add_argument('--temperature', type=float, default=1.0, help='Temperature for the model')
+    parser.add_argument('--top-p', type=float, default=0.95, help='Top-p for the model')
+    parser.add_argument('--top-k', type=int, default=50, help='Top-k for the model')
+    parser.add_argument('--n', type=int, default=3, help='Number of samples to generate')
     return parser.parse_args()
 
 
 def main(args):
+    if args.vllm:
+        from vllm import LLM, SamplingParams
+
     prompt = open(args.prompt_file, 'r').read()
 
-    dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split[0]]
+    if args.dataset_path[0] == 'local':
+        dataset = load_from_disk(args.dataset_path[1])[args.dataset_split[0]]
+    else:
+        dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split[0]]
+    
+    if 'scienceqa' in str(args.dataset_path):
+        def format_scienceqa_question(example):
+            LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            question = example[args.question_col]
+            choices = example["choices"]
+            ret = f"Answer this multiple choice question with one correct answer: {question}\nChoices:\n"
+            for i, choice in enumerate(choices):
+                ret += f"  {LETTERS[i]}. {choice}\n"
+            return {"question_with_choices": ret, "answer_choice": LETTERS[example[args.answer_col]]}
+        
+        dataset = dataset.map(format_scienceqa_question)
+        args.question_col = "question_with_choices"
+        args.answer_col = "answer_choice"
+    
     dataset = dataset.select(range(args.n_samples))
     generation_config = GenerationConfig.from_pretrained(args.model_path)
 
@@ -127,25 +138,25 @@ def main(args):
             args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
 
-        results = []
-        for inst in tqdm(dataset, total=len(dataset), desc='Generating texts'):
-            results.extend(generate_replies(inst, prompt, args, model, tokenizer, generation_config))
-        dataset = Dataset.from_list(results)
+        dataset = dataset.map(partial(
+            generate_replies, prompt=prompt, args=args,
+            model=model, tokenizer=tokenizer,
+            generation_config=generation_config,
+        ))
     else:
         prompts = [prompt.format(q=q) for q in dataset[args.question_col]]
         sampling_params = SamplingParams(
-            n=args.n_samples_per_input,
+            n=args.n,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
             seed=42,
-            max_tokens=256,
+            max_tokens=1024,
             repetition_penalty=1.,
             stop=["<|im_end|>", "<|endoftext|>"],
             include_stop_str_in_output=True,
         )
         sampling_params.update_from_generation_config(generation_config.to_dict())
-        sampling_params.temperature = args.temperature
-        if args.top_k is not None:
-            sampling_params.top_k = args.top_k
-        sampling_params.top_p = args.top_p
 
         llm = LLM(
             model=args.model_path,
@@ -158,28 +169,24 @@ def main(args):
 
         outputs = llm.generate(prompts, sampling_params)
 
-        def parse_vllm_output(example, idx, vllm_outputs):
-            return [{
-                "question": example[args.question_col],
-                "answer": example[args.answer_col],
-                "input_ids": list(vllm_outputs[idx].prompt_token_ids) + list(out.token_ids),
-                "reply": out.text,
-            } for out in vllm_outputs[idx].outputs]
+        new_dataset = []
+        for data, output in zip(dataset, outputs):
+            for gen in output.outputs:
+                new_data_point = data.copy()
+                new_data_point["input_ids"] = list(output.prompt_token_ids) + list(gen.token_ids)
+                new_data_point["reply"] = gen.text
+                new_dataset.append(new_data_point)
+        # Convert list of dicts to HuggingFace Dataset
+        dataset = Dataset.from_dict({k: [d[k] for d in new_dataset] for k in new_dataset[0]})
 
-        # Apply using map with indices
-        mapped = dataset.map(
-            partial(parse_vllm_output, vllm_outputs=outputs),
-            with_indices=True
-        )
-        dataset = Dataset.from_list(list(chain.from_iterable(mapped["__array__"])))
-
-    dataset.save_to_disk(args.save_path)
-    if any(x in args.dataset_path[0].lower() for x in ['gsm8k', 'proofnet', 'math']):
+    if 'gsm8k' in args.dataset_path[0]:
         print_stats(dataset, args)
 
+    dataset.save_to_disk(args.save_path)
     print("Done.")
 
 
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+    
