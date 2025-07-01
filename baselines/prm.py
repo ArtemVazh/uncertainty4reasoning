@@ -6,6 +6,7 @@ from parse import parse
 import numpy as np
 import logging
 
+from lm_polygraph.stat_calculators.extract_claims import Claim
 from lm_polygraph.stat_calculators.stat_calculator import StatCalculator
 from lm_polygraph.utils.model import Model
 from transformers import AutoTokenizer, AutoModel
@@ -60,7 +61,7 @@ class PRMStatCalculator(StatCalculator):
             all_scores_res.append(non_zero_elements_list)
         return all_scores_res
 
-    def get_rewards(self, question, steps) -> list[float]:
+    def get_rewards(self, question: str, steps: list[Claim]) -> list[float]:
         self.init()
         if self.offload_to_cpu_between_calls:
             log.info(f"Uploading PRM model to {self.device}...")

@@ -55,7 +55,7 @@ def main(args):
     print("Done.")
 
     print("Verifying claims...")
-    if 'gsm8k' in args.dataset_path:
+    if any(x in args.dataset_path for x in ['gsm8k', 'math', 'proofnet']):
         stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
     elif 'strategy_qa' in args.dataset_path:
         def parse_strategy_qa_answer(dataset):
@@ -84,6 +84,7 @@ def main(args):
 
     api_key = open(args.api_key_file, 'r').read()
     fact_checker_correctness = StepFactCheck(
+        model=args.anno_model,
         prompt_file=args.prompt_file,
         api_key=api_key,
         n_threads=args.n_threads,
@@ -91,6 +92,7 @@ def main(args):
         label_type="correctness",
     )
     fact_checker_informativeness = StepFactCheck(
+        model=args.anno_model,
         prompt_file=args.prompt_file,
         api_key=api_key,
         n_threads=args.n_threads,
@@ -147,6 +149,7 @@ if __name__ == '__main__':
     parser.add_argument("--hf-cache", type=str, default=None, help="Cache directory for HuggingFace models.")
     parser.add_argument("--api-key-file", type=str, default="configs/deepseek_api_key.txt",
                         help="Path to file containing OpenAI API key.")
+    parser.add_argument("--anno-model", type=str, default="deepseek-reasoner")
     parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
     parser.add_argument("--sample", type=int, default=-1, help="Sampling for debugging.")
