@@ -243,8 +243,13 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
         for idx, token_id in enumerate(input_ids[context_length:]):
             if token_id not in self.tokenizer.all_special_ids:
                 mapping.append(idx)
-    
-        adjusted_positions = [mapping[i] for i in claim_token_positions]
+
+        try:
+            adjusted_positions = [mapping[i] for i in claim_token_positions if len(mapping) > i]
+        except Exception as e:
+            print('Mapping:', len(mapping))
+            print('Claim token positions:', claim_token_positions)
+            raise e
         return (context_length + torch.tensor(adjusted_positions)).int()
     
 

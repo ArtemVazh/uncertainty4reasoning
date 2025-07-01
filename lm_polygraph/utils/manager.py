@@ -95,6 +95,59 @@ def order_calculators(
     return ordered, have_stats
 
 
+def initialize_stat_calculators(
+        factory_stat_calc,
+        stat_calculator_descr,
+        model,
+        estimators=[],
+        generation_metrics=[],
+):
+    stat_calculators_dict = dict()
+    for sc in stat_calculator_descr:
+        for stat in sc.stats:
+            stat_calculators_dict[stat] = sc
+
+    stat_dependencies_dict = dict()
+    for sc in stat_calculator_descr:
+        for stat in sc.stats:
+            stat_dependencies_dict[stat] = sc.dependencies
+
+    greedy = ["greedy_texts"]
+    if not isinstance(model, BlackboxModel):
+        greedy += ["greedy_tokens"]
+
+    stats = (
+            [s for e in estimators for s in e.stats_dependencies]
+            + [s for m in generation_metrics for s in m.stats_dependencies]
+            + greedy
+    )
+
+    stats, have_stats = order_calculators(
+        stats,
+        stat_calculators_dict,
+        stat_dependencies_dict,
+    )
+
+    stats_names = stats
+    stats = [
+        s
+        for s in stats
+        if not (str(s).startswith("ensemble_"))
+           and not (
+            (
+                    str(s).startswith("blackbox_")
+                    and s[len("blackbox_"):] in have_stats
+            )
+            # remove blackbox_X from stats only if X is already in stats to remove duplicated run of stat calculator
+        )
+    ]  # below in calculate() we copy X in blackbox_X
+
+    stat_calculators = factory_stat_calc(
+        [stat_calculators_dict[c] for c in stats]
+    )
+    return stat_calculators, stat_calculators_dict, stats_names
+
+
 class UEManager:
     """
     Manager to conduct uncertainty estimation experiments by using several uncertainty methods, ground-truth
@@ -191,49 +244,12 @@ class UEManager:
         log.info("=" * 100)
         log.info("Initializing stat calculators...")
 
-        self.stat_calculators_dict = dict()
-        for sc in self.stat_calculator_descr:
-            for stat in sc.stats:
-                self.stat_calculators_dict[stat] = sc
-
-        # stat_calculators_dict = {sc.name: sc for sc in self.stat_calculator_descr}
-        stat_dependencies_dict = dict()
-        for sc in self.stat_calculator_descr:
-            for stat in sc.stats:
-                stat_dependencies_dict[stat] = sc.dependencies
-
-        greedy = ["greedy_texts"]
-        if not isinstance(self.model, BlackboxModel):
-            greedy += ["greedy_tokens"]
-
-        stats = (
-                [s for e in self.estimators for s in e.stats_dependencies]
-                + [s for m in self.generation_metrics for s in m.stats_dependencies]
-                + greedy
-        )
-
-        stats, have_stats = order_calculators(
-            stats,
-            self.stat_calculators_dict,
-            stat_dependencies_dict,
-        )
-
-        self.stats_names = stats
-        stats = [
-            s
-            for s in stats
-            if not (str(s).startswith("ensemble_"))
-               and not (
-                (
-                        str(s).startswith("blackbox_")
-                        and s[len("blackbox_"):] in have_stats
-                )
-                # remove blackbox_X from stats only if X is already in stats to remove duplicated run of stat calculator
-            )
-        ]  # below in calculate() we copy X in blackbox_X
-
-        self.stat_calculators = self.factory_stat_calc(
-            [self.stat_calculators_dict[c] for c in stats]
+        self.stat_calculators, self.stat_calculators_dict, self.stats_names = initialize_stat_calculators(
+            self.factory_stat_calc,
+            self.stat_calculator_descr,
+            self.model,
+            self.estimators,
+            self.generation_metrics,
         )
         self.state = "Initialized"
 

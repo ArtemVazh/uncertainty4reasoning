@@ -14,3 +14,7 @@ rouge_score
 nltk>=3.9.1
 lm-polygraph
 vllm
+spacy
+sacrebleu
+evaluate
+bert_score

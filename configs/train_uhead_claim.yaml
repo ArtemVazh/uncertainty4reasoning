@@ -25,6 +25,7 @@ ue_layer:
       n_layers: 2
       n_heads: 8
       dropout: 0.1
+      mask_future_tokens: true
 dataset:
   path: hf:rediska0123/train_gsm8k_Qwen3-1.7B
   prompt_path: configs/qwen3_prompt.txt
