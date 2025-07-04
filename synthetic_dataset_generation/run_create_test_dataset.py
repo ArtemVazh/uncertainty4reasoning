@@ -20,8 +20,8 @@ def main(args):
     # Format questions and extract answers
     questions, answers = [], []
     for inst in dataset:
-        questions.append(prompt_template.format(q=inst[args.question_col]))
         if 'strategy_qa' in args.dataset_path:
+            questions.append(prompt_template.format(q=inst[args.question_col]))
             def parse_strategy_qa_answer(example):
                 answer_str = ""
                 if example[args.answer_col]:
@@ -33,11 +33,23 @@ def main(args):
                 return answer_str
             answers.append(parse_strategy_qa_answer(inst))
         elif 'science_qa' in args.dataset_path:
+            def parse_science_qa_question(example):
+                LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                question = example["question"]
+                choices = example["choices"]
+                ret = f"Answer this multiple choice question with one correct answer: {question}\nChoices:\n"
+                for i, choice in enumerate(choices):
+                    ret += f"  {LETTERS[i]}. {choice}\n"
+                return ret
+            
             def parse_science_qa_answer(example):
                 answer_str = f"The answer is {example[args.answer_col]}. Reasoning: {example['solution']}"
                 return answer_str
+            
+            questions.append(parse_science_qa_question(inst))
             answers.append(parse_science_qa_answer(inst))
         else:   
+            questions.append(prompt_template.format(q=inst[args.question_col]))
             answers.append(inst[args.answer_col])
 
     # Create and save new dataset

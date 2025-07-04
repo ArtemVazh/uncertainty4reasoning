@@ -191,8 +191,13 @@ class StepFactCheck(GenerationMetric):
         q2 = self.prompt2(input_text, claims, answer, reply)
         reply = self.chat.ask(q2, json_output=self.json_output)
         if self.json_output:
-            correctness_labels = json.loads(reply)['correctness']
-            informativeness_labels = json.loads(reply)['informativeness']
+            try:
+                json_reply = json.loads(reply)
+                correctness_labels = json_reply['correctness']
+                informativeness_labels = json_reply['informativeness']
+            except Exception as e:
+                log.warning(f"Skipping text, because could not parse DeepSeek reply: {reply}")
+                return [np.nan for _ in range(len(claims))]
         else:
             correctness_labels: list[int] | None = self.parse_reply(reply)
             informativeness_labels = None
@@ -213,9 +218,10 @@ class StepFactCheck(GenerationMetric):
                 'Skipping text, because of inconsistend number of '
                 'labels in DeepSeek reply: expected {}, got {}'.format(len(claims), reply))
             return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
+        
         return [
             (
-                np.nan if len(claims[i].aligned_token_ids) == 0 else
+                np.nan if len(claims[i].aligned_token_ids) == 0 or np.isnan(claim_labels[i]) else
                 1 if claim_labels[i] == 0 else
                 0
             ) for i in range(len(claims))
@@ -239,7 +245,7 @@ class StepFactCheck(GenerationMetric):
         with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
             futures = [executor.submit(self._score_single, item) for item in all_inputs]
             claim_labels = []
-            for future in tqdm(futures, desc="Verifying claims", disable=not self.progress_bar):
+            for future in tqdm(futures, desc=f"Verifying claims ({self.label_type})", disable=not self.progress_bar):
                 claim_labels.append(future.result())
 
         return claim_labels

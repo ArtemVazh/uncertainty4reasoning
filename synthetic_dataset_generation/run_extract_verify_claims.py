@@ -41,8 +41,16 @@ def generate_targets(dataset, reply_tokens_all, key="verified"):
 def main(args):
     dataset = load_from_disk(args.dataset_path)
     if args.sample > 0:
-        dataset = dataset.shuffle(seed=42)
-        dataset = dataset.select(range(args.sample))
+        unique_questions = []
+        for q in dataset["question"]:
+            if q not in unique_questions:
+                unique_questions.append(q)
+        random.seed(42)
+        unique_questions = random.sample(unique_questions, args.sample)
+        dataset = dataset.filter(lambda x: x["question"] in unique_questions)
+        print(unique_questions)
+
+    print("Length of dataset after sampling:", len(dataset))
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
     prompt = open(args.prompt_file, 'r').read()
 
@@ -79,6 +87,8 @@ def main(args):
                 parsed_answers.append(answer_str)
             return parsed_answers
         stats = {"input_texts": dataset["question"], "claims": claims, "answers": parse_science_qa_answer(dataset)}
+    elif 'plan' in args.dataset_path:
+        stats = {"input_texts": dataset['prompt_0shot'], "claims": claims, "answers": dataset['golden_plan']}
     else:
         raise ValueError(f"Dataset path {args.dataset_path} not supported")
 
@@ -99,9 +109,6 @@ def main(args):
     )
     correctness_labels = fact_checker_correctness(stats, None)
     informativeness_labels = fact_checker_informativeness(stats, None)
-    print(correctness_labels[0])
-    print(informativeness_labels[0])
-    print(claims[0])
     print("Done.")
 
     print("Generating targets...")
