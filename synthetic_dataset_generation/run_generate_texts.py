@@ -83,7 +83,7 @@ def parse_args():
 
     parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
                         help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main". Start with "local" to load from local path, e.g. "local,./scienceqa_missing_images"')
-    parser.add_argument('--dataset-split', type=parse_tuple, default="test", help='Dataset split')
+    parser.add_argument('--dataset-split', type=parse_tuple, default=None, help='Dataset split')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--final-answers', action=argparse.BooleanOptionalAction, default=True,
@@ -112,23 +112,29 @@ def main(args):
     prompt = open(args.prompt_file, 'r').read()
 
     if args.dataset_path[0] == 'local':
-        dataset = load_from_disk(args.dataset_path[1])[args.dataset_split[0]]
+        dataset = load_from_disk(args.dataset_path[1])
+        if args.dataset_split is not None:
+            dataset = dataset[args.dataset_split[0]]
     else:
-        dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split[0]]
+        dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)
+        if args.dataset_split is not None:
+            dataset = dataset[args.dataset_split[0]]
     
     if 'scienceqa' in str(args.dataset_path):
         def format_scienceqa_question(example):
             LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-            question = example[args.question_col]
+            question = example["question"]
             choices = example["choices"]
             ret = f"Answer this multiple choice question with one correct answer: {question}\nChoices:\n"
             for i, choice in enumerate(choices):
                 ret += f"  {LETTERS[i]}. {choice}\n"
-            return {"question_with_choices": ret, "answer_choice": LETTERS[example[args.answer_col]]}
+            return {"question_with_choices": ret, "answer_choice": LETTERS[example["answer"]]}
         
         dataset = dataset.map(format_scienceqa_question)
-        args.question_col = "question_with_choices"
-        args.answer_col = "answer_choice"
+        dataset = dataset.rename_column("question", "question_without_choices")
+        dataset = dataset.rename_column("answer", "answer_raw")
+        dataset = dataset.rename_column("question_with_choices", "question")
+        dataset = dataset.rename_column("answer_choice", "answer")
     
     dataset = dataset.select(range(args.n_samples))
     generation_config = GenerationConfig.from_pretrained(args.model_path)
@@ -173,6 +179,8 @@ def main(args):
         for data, output in zip(dataset, outputs):
             for gen in output.outputs:
                 new_data_point = data.copy()
+                new_data_point["question"] = data[args.question_col]
+                new_data_point["answer"] = data[args.answer_col]
                 new_data_point["input_ids"] = list(output.prompt_token_ids) + list(gen.token_ids)
                 new_data_point["reply"] = gen.text
                 new_dataset.append(new_data_point)
