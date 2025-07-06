@@ -87,10 +87,9 @@ def main(args):
                 parsed_answers.append(answer_str)
             return parsed_answers
         stats = {"input_texts": dataset["question"], "claims": claims, "answers": parse_science_qa_answer(dataset)}
-    elif 'plan' in args.dataset_path:
-        stats = {"input_texts": dataset['prompt_0shot'], "claims": claims, "answers": dataset['golden_plan']}
     else:
-        raise ValueError(f"Dataset path {args.dataset_path} not supported")
+        stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
+        # raise ValueError(f"Dataset path {args.dataset_path} not supported")
 
     api_key = open(args.api_key_file, 'r').read()
     fact_checker_correctness = StepFactCheck(
