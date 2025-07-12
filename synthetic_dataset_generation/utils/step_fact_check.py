@@ -214,6 +214,7 @@ class StepFactCheck(GenerationMetric):
         if len(claim_labels) + 1 == len(claims):
             claim_labels.append(np.nan)  # last answer is undefined
         if len(claim_labels) != len(claims):
+            log.warning(f"Prompt 2: {q2}")
             log.warning(
                 'Skipping text, because of inconsistend number of '
                 'labels in DeepSeek reply: expected {}, got {}'.format(len(claims), reply))
