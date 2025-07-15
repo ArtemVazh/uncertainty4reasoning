@@ -1,11 +1,10 @@
 import torch
 import argparse
-import copy
 import numpy as np
 import multiprocessing
 from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, load_from_disk, Dataset
 from functools import partial
 from collections import defaultdict
 from nltk.translate.bleu_score import sentence_bleu
@@ -29,50 +28,30 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
     inst["question"] = inst[args.question_col]
     inst["answer"] = inst[args.answer_col]
     question = prompt.format(q=inst["question"])
-    inst["prompt"] = question  # Store the formatted prompt
     inputs = tokenizer(question, return_tensors='pt')['input_ids']
     inputs = inputs.to(model.device)
     
-    # Determine if we need sampling based on number of samples requested
-    need_sampling = args.n_samples_per_input > 1 or args.temperature > 0
-    
-    # Override conflicting parameters in generation_config
-    generation_config.do_sample = need_sampling
-    generation_config.max_new_tokens = 1024
-    generation_config.repetition_penalty = 1.0
-    generation_config.diversity_penalty = 0.0
-    generation_config.length_penalty = 1.0
-    generation_config.num_return_sequences = 1
-    # Set temperature appropriately - use small value if we need sampling but temperature is 0
-    effective_temperature = args.temperature if args.temperature > 0 else (0.6 if need_sampling else 0.0)
-
     with torch.no_grad():
         outputs = model.generate(
-            inputs.repeat(args.n_samples_per_input, 1),
-            num_return_sequences=args.n_samples_per_input,
+            inputs,
+            num_return_sequences=1,
             generation_config=generation_config,
             pad_token_id=tokenizer.eos_token_id,
-            temperature=effective_temperature,
-            top_k=args.top_k,
+            temperature=args.temperature,
             top_p=args.top_p,
-            max_new_tokens=256,
-            do_sample=need_sampling,
+            top_k=args.top_k,
+            max_new_tokens=1024,
+            do_sample=False,
             repetition_penalty=1.,
             diversity_penalty=0.,
             length_penalty=1.,
             stop_strings=[tokenizer.eos_token],
             tokenizer=tokenizer,
         )
-    replies = []
-    for i in range(args.n_samples_per_input):
-        reply_text = tokenizer.decode(outputs[i][inputs.shape[1]:], skip_special_tokens=True)
-        reply = copy.deepcopy(inst)
-        reply.update({
-            "input_ids": outputs[i].tolist(),
-            "reply": reply_text,
-        })
-        replies.append(reply)
-    return replies
+    reply = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
+    inst["input_ids"] = outputs[0]
+    inst["reply"] = reply
+    return inst
 
 
 def jaccard_similarity(a, b):
@@ -112,9 +91,9 @@ def parse_tuple(s):
 def parse_args():
     parser = argparse.ArgumentParser(description="Create generation texts for model.")
 
-    parser.add_argument('--dataset-path', type=str, default="openai/gsm8k,main",
-                        help='Path to the dataset file OR HuggingFace dataset identifier as "dataset,config"')
-    parser.add_argument('--dataset-split', type=str, default="test", help='Dataset split')
+    parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
+                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main". Start with "local" to load from local path, e.g. "local,./scienceqa_missing_images"')
+    parser.add_argument('--dataset-split', type=parse_tuple, default=None, help='Dataset split')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--final-answers', action=argparse.BooleanOptionalAction, default=True,
@@ -129,21 +108,23 @@ def parse_args():
     parser.add_argument('--hf-cache', type=str, default=None, help='Path to the HuggingFace cache directory')
     parser.add_argument('--vllm', action='store_true', default=False,
                         help='Whether to use vLLM as the inference backend')
-
-    parser.add_argument('--temperature', type=float, default=0, help='Temperature to generate training data with')
-    parser.add_argument('--top-k', type=int, default=None, help='Top-k sampling')
-    parser.add_argument('--top-p', type=float, default=1.0, help='Top-p (nucleus) sampling')
-    parser.add_argument('--n-samples-per-input', type=int, default=1,
-                        help='How many completions to generate per input')
-
+    parser.add_argument('--temperature', type=float, default=1.0, help='Temperature for the model')
+    parser.add_argument('--top-p', type=float, default=0.95, help='Top-p for the model')
+    parser.add_argument('--top-k', type=int, default=50, help='Top-k for the model')
+    parser.add_argument('--n', type=int, default=3, help='Number of samples to generate')
     return parser.parse_args()
 
 def main(args):
+    if args.vllm:
+        from vllm import LLM, SamplingParams
+
     prompt = open(args.prompt_file, 'r').read()
-    # import pdb; pdb.set_trace()
-    
-    # Check if dataset_path is a file path
-    if os.path.isfile(args.dataset_path):
+
+    if args.dataset_path[0] == 'local':
+        dataset = load_from_disk(args.dataset_path[1])
+        if args.dataset_split is not None:
+            dataset = dataset[args.dataset_split[0]]
+    elif os.path.isfile(args.dataset_path):
         # Load from local file
         if args.dataset_path.endswith('.csv'):
             df = pd.read_csv(args.dataset_path)
@@ -153,19 +134,25 @@ def main(args):
         # df_new = df[[args.question_col, args.answer_col]]   
         dataset = Dataset.from_pandas(df)
     else:
-        # # Parse as HuggingFace dataset identifier
-        # if ',' in args.dataset_path:
-        #     dataset_parts = args.dataset_path.split(',')
-        #     dataset_name = dataset_parts[0].strip()
-        #     config_name = dataset_parts[1].strip() if len(dataset_parts) > 1 else None
-        #     import pdb; pdb.set_trace()
-        #     if config_name:
-        #         dataset = load_dataset(dataset_name, config_name, cache_dir=args.hf_cache)[args.dataset_split]
-        #     else:
-        #         dataset = load_dataset(dataset_name, cache_dir=args.hf_cache)[args.dataset_split]
-        # else:
-        #     # Single dataset name without config
-        dataset = load_dataset(args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
+        dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)
+        if args.dataset_split is not None:
+            dataset = dataset[args.dataset_split[0]]
+    
+    if 'scienceqa' in str(args.dataset_path):
+        def format_scienceqa_question(example):
+            LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            question = example["question"]
+            choices = example["choices"]
+            ret = f"Answer this multiple choice question with one correct answer: {question}\nChoices:\n"
+            for i, choice in enumerate(choices):
+                ret += f"  {LETTERS[i]}. {choice}\n"
+            return {"question_with_choices": ret, "answer_choice": LETTERS[example["answer"]]}
+        
+        dataset = dataset.map(format_scienceqa_question)
+        dataset = dataset.rename_column("question", "question_without_choices")
+        dataset = dataset.rename_column("answer", "answer_raw")
+        dataset = dataset.rename_column("question_with_choices", "question")
+        dataset = dataset.rename_column("answer_choice", "answer")
     
     dataset = dataset.select(range(args.n_samples))
     generation_config = GenerationConfig.from_pretrained(args.model_path)
@@ -175,10 +162,11 @@ def main(args):
             args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
 
-        results = []
-        for inst in tqdm(dataset, total=len(dataset), desc='Generating texts'):
-            results.extend(generate_replies(inst, prompt, args, model, tokenizer, generation_config))
-        dataset = Dataset.from_list(results)
+        dataset = dataset.map(partial(
+            generate_replies, prompt=prompt, args=args,
+            model=model, tokenizer=tokenizer,
+            generation_config=generation_config,
+        ))
     else:
         prompts = [prompt.format(q=q) for q in dataset[args.question_col]]
         print(prompts[0])
@@ -190,7 +178,10 @@ def main(args):
         effective_temperature = args.temperature if args.temperature > 0 else (0.6 if need_sampling else 0.0)
         
         sampling_params = SamplingParams(
-            n=args.n_samples_per_input,
+            n=args.n,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
             seed=42,
             max_tokens=1024,
             repetition_penalty=1.,
@@ -199,12 +190,6 @@ def main(args):
             temperature=effective_temperature,  # Use effective temperature
         )
         sampling_params.update_from_generation_config(generation_config.to_dict())
-        # Override with our effective temperature to ensure consistency
-        sampling_params.temperature = effective_temperature
-        print(f"Effective temperature: {effective_temperature}")
-        if args.top_k is not None:
-            sampling_params.top_k = args.top_k
-        sampling_params.top_p = args.top_p
 
         llm = LLM(
             model=args.model_path,
@@ -218,26 +203,26 @@ def main(args):
 
         outputs = llm.generate(prompts, sampling_params)
 
-        # Duplicate each original row N times with different generated replies
-        all_results = []
-        for idx, example in enumerate(dataset):
-            for out in outputs[idx].outputs:
-                # Create a copy of the original example
-                result = dict(example)
-                # Add the generated reply and input_ids
-                result["reply"] = out.text
-                result["input_ids"] = list(outputs[idx].prompt_token_ids) + list(out.token_ids)
-                all_results.append(result)
-        
-        dataset = Dataset.from_list(all_results)
+        new_dataset = []
+        for data, output in zip(dataset, outputs):
+            for gen in output.outputs:
+                new_data_point = data.copy()
+                new_data_point["question"] = data[args.question_col]
+                new_data_point["answer"] = data[args.answer_col]
+                new_data_point["input_ids"] = list(output.prompt_token_ids) + list(gen.token_ids)
+                new_data_point["reply"] = gen.text
+                new_dataset.append(new_data_point)
+        # Convert list of dicts to HuggingFace Dataset
+        dataset = Dataset.from_dict({k: [d[k] for d in new_dataset] for k in new_dataset[0]})
 
-    dataset.save_to_disk(args.save_path)
-    if any(x in args.dataset_path[0].lower() for x in ['gsm8k', 'proofnet', 'math']):
+    if 'gsm8k' in args.dataset_path[0]:
         print_stats(dataset, args)
 
+    dataset.save_to_disk(args.save_path)
     print("Done.")
 
 
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+    
