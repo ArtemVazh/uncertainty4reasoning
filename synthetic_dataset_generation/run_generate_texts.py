@@ -33,14 +33,18 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
     inputs = tokenizer(question, return_tensors='pt')['input_ids']
     inputs = inputs.to(model.device)
     
+    # Determine if we need sampling based on number of samples requested
+    need_sampling = args.n_samples_per_input > 1 or args.temperature > 0
+    
     # Override conflicting parameters in generation_config
-    generation_config.do_sample = False
+    generation_config.do_sample = need_sampling
     generation_config.max_new_tokens = 1024
     generation_config.repetition_penalty = 1.0
     generation_config.diversity_penalty = 0.0
     generation_config.length_penalty = 1.0
     generation_config.num_return_sequences = 1
-    # Don't set temperature when do_sample=False
+    # Set temperature appropriately - use small value if we need sampling but temperature is 0
+    effective_temperature = args.temperature if args.temperature > 0 else (0.6 if need_sampling else 0.0)
 
     with torch.no_grad():
         outputs = model.generate(
@@ -48,11 +52,11 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
             num_return_sequences=args.n_samples_per_input,
             generation_config=generation_config,
             pad_token_id=tokenizer.eos_token_id,
-            temperature=args.temperature,
+            temperature=effective_temperature,
             top_k=args.top_k,
             top_p=args.top_p,
             max_new_tokens=256,
-            do_sample=args.temperature > 0,
+            do_sample=need_sampling,
             repetition_penalty=1.,
             diversity_penalty=0.,
             length_penalty=1.,
@@ -135,12 +139,6 @@ def parse_args():
     return parser.parse_args()
 
 def main(args):
-    # Fix CUDA multiprocessing issue with vLLM
-    try:
-        multiprocessing.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass  # Already set
-    
     prompt = open(args.prompt_file, 'r').read()
     # import pdb; pdb.set_trace()
     
@@ -152,8 +150,8 @@ def main(args):
         else:
             df = pd.read_json(args.dataset_path, lines=True)
 
-        df_new = df[[args.question_col, args.answer_col]]   
-        dataset = Dataset.from_pandas(df_new)
+        # df_new = df[[args.question_col, args.answer_col]]   
+        dataset = Dataset.from_pandas(df)
     else:
         # # Parse as HuggingFace dataset identifier
         # if ',' in args.dataset_path:
@@ -183,6 +181,14 @@ def main(args):
         dataset = Dataset.from_list(results)
     else:
         prompts = [prompt.format(q=q) for q in dataset[args.question_col]]
+        print(prompts[0])
+        import pdb; pdb.set_trace()
+        # Determine effective temperature for vLLM (same logic as transformers backend)
+        need_sampling = args.n_samples_per_input > 1 or args.temperature > 0
+        print(f"Need sampling: {need_sampling}")
+        print(f"Temperature: {args.temperature}")
+        effective_temperature = args.temperature if args.temperature > 0 else (0.6 if need_sampling else 0.0)
+        
         sampling_params = SamplingParams(
             n=args.n_samples_per_input,
             seed=42,
@@ -190,9 +196,12 @@ def main(args):
             repetition_penalty=1.,
             stop=["<|im_end|>", "<|endoftext|>"],
             include_stop_str_in_output=True,
+            temperature=effective_temperature,  # Use effective temperature
         )
         sampling_params.update_from_generation_config(generation_config.to_dict())
-        sampling_params.temperature = args.temperature
+        # Override with our effective temperature to ensure consistency
+        sampling_params.temperature = effective_temperature
+        print(f"Effective temperature: {effective_temperature}")
         if args.top_k is not None:
             sampling_params.top_k = args.top_k
         sampling_params.top_p = args.top_p
@@ -204,24 +213,23 @@ def main(args):
             tokenizer=args.model_path,
             dtype='auto',
             trust_remote_code=True,
+            gpu_memory_utilization=0.75,
         )
 
         outputs = llm.generate(prompts, sampling_params)
 
-        def parse_vllm_output(example, idx, vllm_outputs):
-            return [{
-                "question": example[args.question_col],
-                "answer": example[args.answer_col],
-                "input_ids": list(vllm_outputs[idx].prompt_token_ids) + list(out.token_ids),
-                "reply": out.text,
-            } for out in vllm_outputs[idx].outputs]
-
-        # Apply using map with indices
-        mapped = dataset.map(
-            partial(parse_vllm_output, vllm_outputs=outputs),
-            with_indices=True
-        )
-        dataset = Dataset.from_list(list(chain.from_iterable(mapped["__array__"])))
+        # Duplicate each original row N times with different generated replies
+        all_results = []
+        for idx, example in enumerate(dataset):
+            for out in outputs[idx].outputs:
+                # Create a copy of the original example
+                result = dict(example)
+                # Add the generated reply and input_ids
+                result["reply"] = out.text
+                result["input_ids"] = list(outputs[idx].prompt_token_ids) + list(out.token_ids)
+                all_results.append(result)
+        
+        dataset = Dataset.from_list(all_results)
 
     dataset.save_to_disk(args.save_path)
     if any(x in args.dataset_path[0].lower() for x in ['gsm8k', 'proofnet', 'math']):

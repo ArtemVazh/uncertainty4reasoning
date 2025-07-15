@@ -1,0 +1,24 @@
+{
+  "_data_files": [
+    {
+      "filename": "data-00000-of-00001.arrow"
+    }
+  ],
+  "_fingerprint": "a92cd7e70811c460",
+  "_format_columns": [
+    "clean_question",
+    "golden_plan",
+    "question",
+    "answer",
+    "prompt",
+    "input_ids",
+    "reply",
+    "claims",
+    "verified",
+    "uncertainty_labels"
+  ],
+  "_format_kwargs": {},
+  "_format_type": null,
+  "_output_all_columns": false,
+  "_split": null
+}

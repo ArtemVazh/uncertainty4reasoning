@@ -182,3 +182,5 @@ wandb/
 workdir/
 logs/
 outputs/
+train_data/train_plan_Qwen3-8B_texts_bon_3_samples/
+train_data/train_plan_Qwen3-8B_texts_new_samples/
