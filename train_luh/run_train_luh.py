@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import json
 import sys
+import warnings
 from scipy.special import expit
 from sklearn.metrics import (
     roc_auc_score,
@@ -71,14 +72,35 @@ def load_model(config):
     config.model.torch_dtype = globals().get(config.model.torch_dtype)
 
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
+    
+    # For DeepSpeed, load model on CPU initially to avoid OOM
+    # DeepSpeed will handle the GPU distribution
+    if hasattr(config, 'deepspeed_config') and config.deepspeed_config:
+        device_map = "cpu"
+        log.info("Using CPU device map for initial loading due to DeepSpeed configuration")
+    else:
+        device_map = config.model.device_map
+    
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path,
-        # torch_dtype=torch.float16,  # Had to comment for Qwen-Math-1.5B
+        torch_dtype=config.model.torch_dtype,  # Use the configured dtype
         trust_remote_code=True,
-        device_map=config.model.device_map,
+        device_map=device_map,  # Use CPU for DeepSpeed, config device_map otherwise
+        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
+
+    # Do not enable gradient checkpointing when the base model is frozen (no parameters require gradients).
+    # Enabling it in that case triggers the warning:
+    # "None of the inputs have requires_grad=True" and wastes memory.
+    if any(p.requires_grad for p in base_model.parameters()):
+        if hasattr(base_model, "gradient_checkpointing_enable"):
+            base_model.gradient_checkpointing_enable()
+        base_model.config.use_cache = False  # Disable KV cache when using checkpointing
+    else:
+        # Keep cache enabled for faster inference since we're not using gradient checkpointing
+        base_model.config.use_cache = True
 
     if config.ue_layer.path:
         uq_head = AutoUncertaintyHead.from_pretrained(config.ue_layer.path, base_model)
@@ -111,6 +133,12 @@ def load_model(config):
             ue_pos_weight=config.ue_layer.pos_weight,
             output_attention=uq_head.output_attentions,
         )
+
+    # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
+    if hasattr(base_model, 'dtype'):
+        model.ue_head = model.ue_head.to(dtype=base_model.dtype)
+    elif config.model.torch_dtype:
+        model.ue_head = model.ue_head.to(dtype=config.model.torch_dtype)
 
     for name, param in model.named_parameters():
         if "ue_head" in name:
@@ -151,6 +179,26 @@ def load_data(config, tokenizer):
         val_dataset_name = config.dataset.validation if hasattr(config.dataset, "validation") else "eval"
         tokenized_data = DatasetDict({"train": tokenized_data, "test": dataset[val_dataset_name]})
 
+    # Add subset functionality for debugging
+    if hasattr(config.dataset, 'subset') and config.dataset.subset is not None:
+        subset_size = config.dataset.subset
+        log.info(f"Using subset of {subset_size} samples for debugging...")
+        
+        # Suppress gradient checkpointing warnings for small subsets
+        # These warnings are expected when batches have no trainable parameters
+        warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True")
+        
+        # Apply subset to training data
+        if len(tokenized_data["train"]) > subset_size:
+            tokenized_data["train"] = tokenized_data["train"].select(range(subset_size))
+            log.info(f"Training dataset reduced to {len(tokenized_data['train'])} samples")
+        
+        # Apply subset to test data (use smaller subset for faster evaluation)
+        test_subset_size = min(subset_size // 4, len(tokenized_data["test"]))  # Use 1/4 of subset size for test
+        if len(tokenized_data["test"]) > test_subset_size and test_subset_size > 0:
+            tokenized_data["test"] = tokenized_data["test"].select(range(test_subset_size))
+            log.info(f"Test dataset reduced to {len(tokenized_data['test'])} samples")
+
     def prompt_tokens(inst):
         PROMPT = open(config.dataset.prompt_path, 'r').read()
         inp = PROMPT.format(q=inst["question"])
@@ -158,8 +206,8 @@ def load_data(config, tokenizer):
         return {"prompt_tokens": input_ids}
 
     tokenized_data = tokenized_data.map(prompt_tokens)
-    log.info(f"Length of the training dataset: {len(tokenized_data['train'])}")
-    log.info(f"Length of the testing dataset: {len(tokenized_data['test'])}")
+    log.info(f"Final length of the training dataset: {len(tokenized_data['train'])}")
+    log.info(f"Final length of the testing dataset: {len(tokenized_data['test'])}")
 
     return tokenized_data
 
@@ -555,7 +603,8 @@ def main(config):
         include_num_input_tokens_seen=True,
         gradient_checkpointing=False,
         dataloader_num_workers=1,
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        save_total_limit=getattr(config.training_arguments, 'save_total_limit', 3),  # Add missing save_total_limit
         #label_names=["verified"]
     )
 

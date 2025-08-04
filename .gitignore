@@ -192,3 +192,8 @@ train_data/train_plan_Qwen3-8B_texts_new_samples/
 train_data/
 planning_datasets/
 *.ipynb
+configs/deepseek_api_key.txt
+bash_scripts/
+diversity_sampling/
+test_data/
+CLAUDE.md

@@ -1,6 +1,7 @@
 import numpy as np
 import argparse
 import random
+from tqdm import tqdm
 
 from datasets import load_from_disk, Dataset
 from transformers import AutoTokenizer
@@ -16,7 +17,7 @@ def get_question(dataset, i, prompt):
 def extract_tokens_of_reply(dataset, tokenizer, prompt):
     greedy_tokens = []
     inpt_ids = dataset["input_ids"]
-    for i in range(len(dataset)):
+    for i in tqdm(range(len(dataset)), desc="Extracting tokens"):
         question = get_question(dataset, i, prompt)
         question_tokens = tokenizer(question, return_tensors='pt')['input_ids'][0]
         greedy_tokens.append(inpt_ids[i][len(question_tokens):])
@@ -25,7 +26,7 @@ def extract_tokens_of_reply(dataset, tokenizer, prompt):
 
 def generate_targets(dataset, reply_tokens_all, key="verified"):
     targets = []
-    for idx in range(len(dataset)):
+    for idx in tqdm(range(len(dataset)), desc=f"Generating {key} targets"):
         reply_tokens = reply_tokens_all[idx]
         claims = dataset["claims"][idx]
         verified = dataset[key][idx]
@@ -52,10 +53,13 @@ def main(args):
     elif start_idx != 0:
         print(f"Skipping the first {start_idx} samples (processing indices {start_idx} to {end_idx - 1})")
 
+    # print(dataset)
+    # import pdb; pdb.set_trace()
     # Only perform selection when needed to avoid unnecessary dataset copy
     if start_idx != 0 or args.subset is not None:
         dataset = dataset.select(range(start_idx, end_idx))
-    
+    # print(dataset)
+    # import pdb; pdb.set_trace()
     if args.sample > 0:
         unique_questions = []
         for q in dataset["question"]:
@@ -138,8 +142,11 @@ def main(args):
         "informativeness": informativeness_labels,
     })
     new_dataset = Dataset.from_dict(result)
+    print('finish making new dataset')
     result["uncertainty_labels"] = generate_targets(new_dataset, greedy_tokens, key="verified")
+    print('finish making uncertainty labels')
     result["informativeness_labels"] = generate_targets(new_dataset, greedy_tokens, key="informativeness")
+    print('finish making informativeness labels')
     print("Done.")
 
     print(f"Saving data to: {args.save_path}")

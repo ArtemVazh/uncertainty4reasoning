@@ -98,7 +98,7 @@ def parse_args():
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--final-answers', action=argparse.BooleanOptionalAction, default=True,
                         help='Whether dataset contains final answers for each problem')
-    parser.add_argument('--n-samples', type=int, required=True, help='Number of samples to evaluate from the dataset')
+    parser.add_argument('--n-samples', type=int, help='Number of samples to evaluate from the dataset')
     parser.add_argument('--prompt-file', type=str, required=True, help='Path to the prompt text file')
 
     parser.add_argument('--model-path', type=str, required=True, help='Path to the pretrained model')
@@ -111,7 +111,7 @@ def parse_args():
     parser.add_argument('--temperature', type=float, default=1.0, help='Temperature for the model')
     parser.add_argument('--top-p', type=float, default=0.95, help='Top-p for the model')
     parser.add_argument('--top-k', type=int, default=50, help='Top-k for the model')
-    parser.add_argument('--n', type=int, default=3, help='Number of samples to generate')
+    parser.add_argument('--n-samples-per-input', type=int, default=3, help='Number of samples to generate')
     return parser.parse_args()
 
 def main(args):
@@ -124,12 +124,13 @@ def main(args):
         dataset = load_from_disk(args.dataset_path[1])
         if args.dataset_split is not None:
             dataset = dataset[args.dataset_split[0]]
-    elif os.path.isfile(args.dataset_path):
+    elif os.path.isfile(args.dataset_path[0]):
         # Load from local file
-        if args.dataset_path.endswith('.csv'):
-            df = pd.read_csv(args.dataset_path)
+        file_path = args.dataset_path[0]
+        if file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
         else:
-            df = pd.read_json(args.dataset_path, lines=True)
+            df = pd.read_json(file_path, lines=True)
 
         # df_new = df[[args.question_col, args.answer_col]]   
         dataset = Dataset.from_pandas(df)
@@ -154,7 +155,10 @@ def main(args):
         dataset = dataset.rename_column("question_with_choices", "question")
         dataset = dataset.rename_column("answer_choice", "answer")
     
-    dataset = dataset.select(range(args.n_samples))
+    if args.n_samples is not None:
+        dataset = dataset.select(range(args.n_samples))
+    else:
+        dataset = dataset.select(range(len(dataset)))
     generation_config = GenerationConfig.from_pretrained(args.model_path)
 
     if not args.vllm:
@@ -172,13 +176,13 @@ def main(args):
         print(prompts[0])
         import pdb; pdb.set_trace()
         # Determine effective temperature for vLLM (same logic as transformers backend)
-        need_sampling = args.n_samples_per_input > 1 or args.temperature > 0
-        print(f"Need sampling: {need_sampling}")
-        print(f"Temperature: {args.temperature}")
-        effective_temperature = args.temperature if args.temperature > 0 else (0.6 if need_sampling else 0.0)
+        # need_sampling = args.n_samples_per_input > 1 or args.temperature > 0
+        # print(f"Need sampling: {need_sampling}")
+        # print(f"Temperature: {args.temperature}")
+        # effective_temperature = args.temperature if args.temperature > 0 else (0.6 if need_sampling else 0.0)
         
         sampling_params = SamplingParams(
-            n=args.n,
+            n=args.n_samples_per_input,
             temperature=args.temperature,
             top_p=args.top_p,
             top_k=args.top_k,
@@ -187,7 +191,6 @@ def main(args):
             repetition_penalty=1.,
             stop=["<|im_end|>", "<|endoftext|>"],
             include_stop_str_in_output=True,
-            temperature=effective_temperature,  # Use effective temperature
         )
         sampling_params.update_from_generation_config(generation_config.to_dict())
 

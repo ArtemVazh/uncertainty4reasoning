@@ -31,6 +31,8 @@ dataset:
   num_instances: 0
   test_size: 0
   validation: test
+  label_key_claim: verified
+  label_key_token: uncertainty_labels
 training_arguments:
   num_train_epochs: 10
   learning_rate: 0.0001

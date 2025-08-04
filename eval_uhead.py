@@ -148,11 +148,42 @@ def main(args):
                 man.push_to_hub(args.hf_save_path)
         
         if hasattr(args, "report_to_wandb") and args.report_to_wandb:
-            wandb.log({str(k) : v for k, v in man.gen_metrics})
-            wandb.log({str(k) : v for k, v in man.metrics.items()})
+            try:
+                # Log metrics with some safeguards
+                gen_metrics_dict = {str(k): v for k, v in man.gen_metrics if isinstance(v, (int, float, str, bool))}
+                metrics_dict = {str(k): v for k, v in man.metrics.items() if isinstance(v, (int, float, str, bool))}
+                
+                if gen_metrics_dict:
+                    wandb.log(gen_metrics_dict)
+                if metrics_dict:
+                    wandb.log(metrics_dict)
+            except Exception as e:
+                log.warning(f"Failed to log metrics to wandb: {e}")
             
     if hasattr(args, "report_to_wandb") and args.report_to_wandb:
-        wandb.finish()
+        try:
+            # Add timeout to wandb.finish() to prevent hanging
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("wandb.finish() timed out")
+            
+            # Set timeout for 30 seconds
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(180)
+            
+            wandb.finish()
+            signal.alarm(0)  # Cancel the alarm
+            
+        except TimeoutError:
+            log.warning("wandb.finish() timed out, forcing exit")
+            try:
+                # Try to finish without syncing
+                wandb.finish(exit_code=0, quiet=True)
+            except:
+                pass
+        except Exception as e:
+            log.warning(f"Error during wandb.finish(): {e}")
 
 
 
