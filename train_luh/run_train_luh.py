@@ -540,7 +540,6 @@ class TrainerCustom(Trainer):
                     buckets[metric].append(val)
             else:
                 results[k] = v
-        print('!!!! results1: ', results)
 
         # ---- Additional datasets ----
         for name, ds in self.additional_eval_datasets.items():
@@ -553,7 +552,7 @@ class TrainerCustom(Trainer):
             for k, v in m.items():
                 if not k.startswith(f"eval_{name}_"):
                     # preserve any unexpected extras under a namespaced key
-                    results[f"{name}/{k}"] = v
+                    results[f"{name}_{k}"] = v
                     continue
                 metric = k[len(f"eval_{name}_"):]
                 val = float(v)
@@ -561,15 +560,15 @@ class TrainerCustom(Trainer):
                 if metric in avg_metrics:
                     buckets[metric].append(val)
 
-        print('!!!! results2: ', results)
-
+        mean_results = {}
         for metric, vals in buckets.items():
             if not vals:
                 continue
             mean_val = float(np.mean(vals))
+            mean_results[f"eval_mean_{metric}"] = mean_val
             results[f"eval_mean_{metric}"] = mean_val
 
-        print('!!!! results3: ', results)
+        self.log(mean_results)
 
         return results
 

@@ -2,7 +2,7 @@
 program: train_luh/run_train_luh.py  # The script you want to execute
 method: bayes
 metric:
-  name: eval/mean/f1
+  name: eval_mean_f1
   goal: maximize
 
 early_terminate:
