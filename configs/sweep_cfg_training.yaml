@@ -2,7 +2,7 @@
 program: train_luh/run_train_luh.py  # The script you want to execute
 method: bayes
 metric:
-  name: eval_mean_f1
+  name: eval/mean_f1
   goal: maximize
 
 early_terminate:
@@ -38,7 +38,7 @@ command:
 
   # ----- fixed baseline overrides (can be overridden by ${args_no_hyphens}) -----
   - model.pretrained_model_name_or_path=Qwen/Qwen3-8B
-  - dataset.path=hf:rediska0123/train_prm12k_Qwen3-8B
+  - dataset.path=hf:rediska0123/train_prm12k_Qwen3-8B_debug
   - dataset.prompt_path=configs/qwen3_prompt_general.txt
 
   - do_train=true
@@ -53,8 +53,6 @@ command:
 
   # extra eval datasets (names appear in logs as eval/<name>_*)
   - +additional_test_datasets.proofnet=hf:rediska0123/train_proofnet_Qwen3-8B_sampling
-  - +additional_test_datasets.gsm8k=hf:rediska0123/train_gsm8k_Qwen3-8B_sampling
-  - +additional_test_datasets.math=hf:rediska0123/train_math_Qwen3-8B_sampling
 
   # ----- place W&B’s sampled params at the END so they override anything above -----
   - ${args_no_hyphens}
