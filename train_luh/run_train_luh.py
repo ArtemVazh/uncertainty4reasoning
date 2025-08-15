@@ -19,6 +19,7 @@ from hydra.core.hydra_config import HydraConfig
 import numpy as np
 import random
 from itertools import chain
+from collections import defaultdict
 
 import torch
 import torch.nn.init as init
@@ -49,7 +50,7 @@ import pandas as pd
 from datasets import Dataset
 
 if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
-    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none", "colwise", 'rowwise']
 transformers_logging.set_verbosity_info()
 transformers_logging.enable_default_handler()
 
@@ -73,7 +74,7 @@ def load_model(config):
     config.model.torch_dtype = globals().get(config.model.torch_dtype)
 
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
-    
+
     # For DeepSpeed, load model on CPU initially to avoid OOM
     # DeepSpeed will handle the GPU distribution
     if hasattr(config, 'deepspeed_config') and config.deepspeed_config:
@@ -81,7 +82,7 @@ def load_model(config):
         log.info("Using CPU device map for initial loading due to DeepSpeed configuration")
     else:
         device_map = config.model.device_map
-    
+
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path,
         torch_dtype=config.model.torch_dtype,  # Use the configured dtype
@@ -112,7 +113,7 @@ def load_model(config):
 
         def reinitialize_weights(module):
             if hasattr(module, "weight") and module.weight is not None and (
-            not (hasattr(module, "name") and "positional_encoding" in module.name)):
+                    not (hasattr(module, "name") and "positional_encoding" in module.name)):
                 if module.weight.ndim >= 2:
                     init.xavier_uniform_(module.weight)
                 else:
@@ -179,16 +180,16 @@ def load_data(config, tokenizer):
     if hasattr(config.dataset, 'subset') and config.dataset.subset is not None:
         subset_size = config.dataset.subset
         log.info(f"Using subset of {subset_size} samples for debugging...")
-        
+
         # Suppress gradient checkpointing warnings for small subsets
         # These warnings are expected when batches have no trainable parameters
         warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True")
-        
+
         # Apply subset to training data
         if len(tokenized_data["train"]) > subset_size:
             tokenized_data["train"] = tokenized_data["train"].select(range(subset_size))
             log.info(f"Training dataset reduced to {len(tokenized_data['train'])} samples")
-        
+
         # Apply subset to test data (use smaller subset for faster evaluation)
         test_subset_size = min(subset_size // 4, len(tokenized_data["test"]))  # Use 1/4 of subset size for test
         if len(tokenized_data["test"]) > test_subset_size and test_subset_size > 0:
@@ -491,6 +492,12 @@ class LoggerCallback(TrainerCallback):
             log.info(logs)
 
 
+from collections import defaultdict
+import numpy as np
+from datasets import Dataset
+from transformers import Trainer
+
+
 class TrainerCustom(Trainer):
     def __init__(
             self,
@@ -504,25 +511,65 @@ class TrainerCustom(Trainer):
         self.additional_eval_datasets = additional_eval_datasets or {}
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        """
+        Emits:
+          - main eval:                   eval_<metric>
+          - per-additional-dataset:      eval_<ds_name>_<metric>
+          - means (all sets):            eval_mean_<metric>
+        """
+        results: dict[str, float] = {}
+        avg_metrics = {"accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"}
+        buckets = defaultdict(list)  # metric -> [values from main eval + all additional evals]
+
+        # ---- Main eval set ----
         self.compute_metrics = lambda eval_pred: compute_metrics_claims(self.eval_dataset, eval_pred)
-        log.info('Evaluating...')
-        results = super().evaluate(
-            eval_dataset=eval_dataset,
-            ignore_keys=["logits"],
-            metric_key_prefix=metric_key_prefix,
+        base_eval_ds = self.eval_dataset if eval_dataset is None else eval_dataset
+        base_metrics = super().evaluate(
+            eval_dataset=base_eval_ds,
+            ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
+            metric_key_prefix="eval",
         )
+        # base_metrics keys like "eval_f1", "eval_pr_auc", plus loss/runtime/etc.
+        for k, v in base_metrics.items():
+            if k.startswith("eval_"):
+                metric = k[len("eval_"):]  # "f1", "roc_auc", ...
+                val = float(v)
+                # nice hierarchy + table-friendly alias
+                results[f"eval_{metric}"] = val
+                if metric in avg_metrics:
+                    buckets[metric].append(val)
+            else:
+                results[k] = v
+        print('!!!! results1: ', results)
 
-        for name, dataset in self.additional_eval_datasets.items():
-            log.info(f'Additionally evaluating on {name}...')
-            self.compute_metrics = lambda eval_pred: compute_metrics_claims(dataset, eval_pred)
-
-            metrics = super().evaluate(
-                eval_dataset=dataset,
-                ignore_keys=["logits"],
-                metric_key_prefix=name
+        # ---- Additional datasets ----
+        for name, ds in self.additional_eval_datasets.items():
+            self.compute_metrics = (lambda eval_pred, d=ds: compute_metrics_claims(d, eval_pred))
+            m = super().evaluate(
+                eval_dataset=ds,
+                ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
+                metric_key_prefix=f"eval_{name}",
             )
-            for key, val in metrics.items():
-                results[name + '/' + key] = val
+            for k, v in m.items():
+                if not k.startswith(f"eval_{name}_"):
+                    # preserve any unexpected extras under a namespaced key
+                    results[f"{name}/{k}"] = v
+                    continue
+                metric = k[len(f"eval_{name}_"):]
+                val = float(v)
+                results[f"eval_{name}_{metric}"] = val
+                if metric in avg_metrics:
+                    buckets[metric].append(val)
+
+        print('!!!! results2: ', results)
+
+        for metric, vals in buckets.items():
+            if not vals:
+                continue
+            mean_val = float(np.mean(vals))
+            results[f"eval_mean_{metric}"] = mean_val
+
+        print('!!!! results3: ', results)
 
         return results
 
@@ -636,7 +683,8 @@ def main(config):
         # fp16=True,  # Had to comment for Qwen2.5-Math-1.5B, othervise it output nan logits and attentions
         # fp16_full_eval=False,
         load_best_model_at_end=True if config.do_save_checkpoints else False,
-        metric_for_best_model="pr_auc",
+        metric_for_best_model="eval_mean_f1",
+        greater_is_better=True,
         eval_strategy="epoch",
         logging_strategy="epoch",
         save_strategy="epoch" if config.do_save_checkpoints else "no",
@@ -648,7 +696,7 @@ def main(config):
         dataloader_num_workers=1,
         remove_unused_columns=False,
         save_total_limit=getattr(config.training_arguments, 'save_total_limit', 3),  # Add missing save_total_limit
-        #label_names=["verified"]
+        # label_names=["verified"]
     )
 
     def dataset_filter(inst):
@@ -677,7 +725,7 @@ def main(config):
         # For optimization with wandb, use the wandb sweep feature
 
         def compute_objective(metrics):
-            return metrics["eval_f1"]
+            return metrics["eval_mean_f1"]  # mean across all additional datasets
 
         def hp_space(trial):
             return {
