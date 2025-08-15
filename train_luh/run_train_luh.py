@@ -27,6 +27,7 @@ from datasets import DatasetDict, Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    AutoConfig,
     DataCollatorForLanguageModeling,
     EarlyStoppingCallback,
     Trainer,
@@ -90,6 +91,7 @@ def load_model(config):
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
+    base_model.config.attn_implementation = "eager"
 
     # Do not enable gradient checkpointing when the base model is frozen (no parameters require gradients).
     # Enabling it in that case triggers the warning:
@@ -109,7 +111,8 @@ def load_model(config):
         uq_head = AutoUncertaintyHead.from_config(config.ue_layer.head_cfg, base_model)
 
         def reinitialize_weights(module):
-            if hasattr(module, "weight") and module.weight is not None and (not(hasattr(module, "name") and "positional_encoding" in module.name)):
+            if hasattr(module, "weight") and module.weight is not None and (
+            not (hasattr(module, "name") and "positional_encoding" in module.name)):
                 if module.weight.ndim >= 2:
                     init.xavier_uniform_(module.weight)
                 else:
@@ -119,20 +122,12 @@ def load_model(config):
 
         uq_head.apply(reinitialize_weights)
 
-    if uq_head.model_type == "claim":
-        model = CausalLMWithUncertaintyLayerClaim(
-            base_model,
-            ue_head=uq_head,
-            ue_pos_weight=config.ue_layer.pos_weight,
-            output_attention=uq_head.output_attentions,
-        )
-    elif uq_head.model_type == "token":
-        model = CausalLMWithUncertaintyLayer(
-            base_model,
-            ue_head=uq_head,
-            ue_pos_weight=config.ue_layer.pos_weight,
-            output_attention=uq_head.output_attentions,
-        )
+    model = CausalLMWithUncertaintyLayerClaim(
+        base_model,
+        ue_head=uq_head,
+        ue_pos_weight=config.ue_layer.pos_weight,
+        output_attention=uq_head.output_attentions,
+    )
 
     # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
     if hasattr(base_model, 'dtype'):
@@ -172,7 +167,8 @@ def load_data(config, tokenizer):
     if "test" not in dataset:
         log.info("Performing train-test split...")
         tokenized_data = tokenized_data.train_test_split(
-            test_size=config.dataset.test_size
+            test_size=config.dataset.test_size,
+            seed=42,
         )
 
     else:
@@ -212,6 +208,36 @@ def load_data(config, tokenizer):
     return tokenized_data
 
 
+def load_additional_test_datasets(config, tokenizer):
+    if not getattr(config, "additional_test_datasets", {}):
+        return {}
+
+    additional_datasets = {}
+    PROMPT = open(config.dataset.prompt_path, 'r').read()
+
+    def prompt_tokens(inst):
+        inp = PROMPT.format(q=inst["question"])
+        input_ids = tokenizer(inp, return_tensors='pt')['input_ids'][0]
+        return {"prompt_tokens": input_ids}
+
+    for name, path in config.additional_test_datasets.items():
+        log.info(f"Loading additional test dataset '{name}' from: {path}")
+        dataset = load_any_dataset(path, config)
+        if "test" in dataset:
+            dataset_test = dataset["test"]
+        else:
+            log.info("Performing train-test split...")
+            dataset_test = dataset['train'].train_test_split(
+                test_size=config.dataset.test_size,
+                seed=42,
+            )['test']
+        dataset_test = dataset_test.map(prompt_tokens)
+        additional_datasets[name] = dataset_test
+        log.info(f"Loaded additional dataset '{name}' with {len(dataset_test)} examples.")
+
+    return additional_datasets
+
+
 # def _add_attention_mask(e):
 #     if "attention_mask" not in e.keys() or e["attention_mask"] is None:
 #         e["attention_mask"] = [1 for _ in e["input_ids"]]
@@ -224,9 +250,9 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         super().__init__(tokenizer, *args, **kwargs)
 
     def torch_call(self, examples):
-        #examples = [_add_attention_mask(e) for e in examples]
+        # examples = [_add_attention_mask(e) for e in examples]
         # ex = [{"input_ids": e["input_ids"], "attention_mask": e["attention_mask"]} for e in examples]
-        #examples = [_add_attention_mask(e) for e in examples]
+        # examples = [_add_attention_mask(e) for e in examples]
         # ex = [
         #     {k: v for k, v in e.items() if k not in [
         #         "uncertainty_labels", "reply"
@@ -237,17 +263,15 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         batch_size = len(examples)
 
         # Do padding of input_ids
-        batch = super().torch_call([{'input_ids' : e['input_ids']} for e in examples]) 
-
+        batch = super().torch_call([{'input_ids': e['input_ids']} for e in examples])
 
         # Construct context lengths
         context_lengths = []
         for i in range(batch_size):
             reply_len = len(examples[i]['input_ids']) - len(examples[i]['prompt_tokens'])
             context_lengths.append(batch["input_ids"][i].shape[0] - reply_len)
-        
-        batch["context_lengths"] = torch.tensor(context_lengths)
 
+        batch["context_lengths"] = torch.tensor(context_lengths)
 
         # Do padding of labels
         all_padded_labels = []
@@ -272,7 +296,6 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         #     batch["uncertainty_labels"][i] = torch.tensor(all_padded_labels[i])
         batch["uncertainty_labels"] = torch.tensor(all_padded_labels)
 
-
         # context_lengths = []
         # for i in range(len(batch["input_ids"])):
         #     reply = examples[i]["reply"]
@@ -282,11 +305,11 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         #     while ctx < len(input_ids) and len(self._tokenizer.decode(input_ids[:ctx + 1])) <= pref_len:
         #         ctx += 1
         #     context_lengths.append(ctx)
-        
+
         # batch["context_lengths"] = torch.tensor(context_lengths)
         # print("After:=========",  batch["uncertainty_labels"])
         return batch
-    
+
 
 class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguageModeling):
     def __init__(self, tokenizer, *args, **kwargs):
@@ -307,25 +330,22 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
             print('Claim token positions:', claim_token_positions)
             raise e
         return (context_length + torch.tensor(adjusted_positions)).int()
-    
 
     def torch_call(self, examples):
         batch_size = len(examples)
 
         # Do padding
-        batch = super().torch_call([{'input_ids' : e['input_ids']} for e in examples]) 
-
+        batch = super().torch_call([{'input_ids': e['input_ids']} for e in examples])
 
         # Construct context lengths
         context_lengths = []
         for i in range(batch_size):
             reply_len = len(examples[i]['input_ids']) - len(examples[i]['prompt_tokens'])
             context_lengths.append(batch["input_ids"][i].shape[0] - reply_len)
-        
+
         batch["context_lengths"] = torch.tensor(context_lengths)
 
         log.info(f'CONTEXT LENGTHS: {context_lengths}')
-
 
         # Construct claim tensors
         all_claim_tensors = []
@@ -334,40 +354,40 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
             full_len = batch["input_ids"].shape[1]
             for claim in examples[i]["claims"]:
                 mask = torch.zeros(batch["input_ids"][i].shape, dtype=int)
-                claim_token_positions = self._adjust_claim_positions(batch["context_lengths"][i], batch["input_ids"][i], claim)
+                claim_token_positions = self._adjust_claim_positions(batch["context_lengths"][i], batch["input_ids"][i],
+                                                                     claim)
                 if any(e > mask.shape[0] for e in claim_token_positions):
                     print("Error")
-                
+
                 mask[claim_token_positions] = 1
-                instance_claims.append(mask[1:]) # ignoring <s>
+                instance_claims.append(mask[1:])  # ignoring <s>
 
-            all_claim_tensors.append(torch.stack(instance_claims) if len(instance_claims) > 0 else torch.zeros(0, full_len - 1, dtype=int))
-        
+            all_claim_tensors.append(
+                torch.stack(instance_claims) if len(instance_claims) > 0 else torch.zeros(0, full_len - 1, dtype=int))
+
         batch["claims"] = all_claim_tensors
-
 
         # Construct labels
         all_labels = []
         for i in range(len(examples)):
             uncertainty_labels = examples[i]["verified"]
             all_labels.append([e if not np.isnan(e) else -100 for e in uncertainty_labels])
-        
+
         batch["verified"] = all_labels
 
-        
         dict_batch = dict(batch)
         return dict_batch
 
 
 def compute_claim_level_metrics(tokenized_data, logits):
     from itertools import chain
-    
+
     claim_level_targets = list(chain(*tokenized_data["verified"]))
 
     num_instances = logits.shape[0]
     claim_level_preds = []
     for i in range(num_instances):
-        prompt_tokens = tokenized_data[i]["prompt_tokens"] # TODO: this is incorrect due to padding 
+        prompt_tokens = tokenized_data[i]["prompt_tokens"]  # TODO: this is incorrect due to padding
         generated_tokens = tokenized_data[i]["input_ids"][len(prompt_tokens):]
         context_length = logits[i].shape[0] - len(generated_tokens)  # To mitigate padding 
         for claim in tokenized_data["claims"][i]:
@@ -390,7 +410,7 @@ def compute_claim_level_metrics(tokenized_data, logits):
 def compute_metrics(tokenized_data, eval_pred):
     logits, labels = eval_pred
     labels = labels[1]
-    labels = labels[:, 1:] # Shifting labels
+    labels = labels[:, 1:]  # Shifting labels
     logits = logits[1] if type(logits) is tuple else logits
 
     mask = (labels != -100).reshape(-1)
@@ -434,9 +454,8 @@ def compute_metrics(tokenized_data, eval_pred):
 
 def compute_metrics_claims(tokenized_data, eval_pred):
     logits, labels = eval_pred
-    
-    labels = np.asarray([e if not np.isnan(e) else -100  for e in list(chain(*tokenized_data["verified"]))])
 
+    labels = np.asarray([e if not np.isnan(e) else -100 for e in list(chain(*tokenized_data["verified"]))])
 
     mask = (labels != -100).reshape(-1)
     labels = labels.reshape(-1)[mask]
@@ -473,17 +492,39 @@ class LoggerCallback(TrainerCallback):
 
 
 class TrainerCustom(Trainer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def evaluate(
-        self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"
+    def __init__(
+            self,
+            *args,
+            eval_dataset: Dataset,
+            additional_eval_datasets: dict[str, Dataset] | None = None,
+            **kwargs,
     ):
-        return super().evaluate(
+        super().__init__(*args, **kwargs, eval_dataset=eval_dataset)
+        self.eval_dataset = eval_dataset
+        self.additional_eval_datasets = additional_eval_datasets or {}
+
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        self.compute_metrics = lambda eval_pred: compute_metrics_claims(self.eval_dataset, eval_pred)
+        log.info('Evaluating...')
+        results = super().evaluate(
             eval_dataset=eval_dataset,
             ignore_keys=["logits"],
             metric_key_prefix=metric_key_prefix,
         )
+
+        for name, dataset in self.additional_eval_datasets.items():
+            log.info(f'Additionally evaluating on {name}...')
+            self.compute_metrics = lambda eval_pred: compute_metrics_claims(dataset, eval_pred)
+
+            metrics = super().evaluate(
+                eval_dataset=dataset,
+                ignore_keys=["logits"],
+                metric_key_prefix=name
+            )
+            for key, val in metrics.items():
+                results[name + '/' + key] = val
+
+        return results
 
 
 def wandb_save_directory(directory_path):
@@ -524,7 +565,7 @@ def main(config):
             if path["schema"] == "file"
         ][0]
         wandb_cfg["HYDRA_CONFIG"] = (
-            Path(config_path_hydra) / HydraConfig.get().job.config_name
+                Path(config_path_hydra) / HydraConfig.get().job.config_name
         )
         os.environ["WANDB_DIR"] = str(Path(output_dir))
         project = os.environ["WANDB_PROJECT"]
@@ -576,13 +617,15 @@ def main(config):
     log.info("Loading dataset...")
 
     tokenized_data = load_data(config, tokenizer)
+    additional_test_datasets = load_additional_test_datasets(config, tokenizer)
     log.info("Done.")
     log.info(repr(tokenized_data))
 
     train_args = TrainingArguments(
         num_train_epochs=config.training_arguments.num_train_epochs,
         per_device_train_batch_size=config.training_arguments.per_device_train_batch_size,
-        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size, # TODO: add parameter for eval batch size
+        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size,
+        # TODO: add parameter for eval batch size
         gradient_accumulation_steps=config.training_arguments.gradient_accumulation_steps,
         eval_accumulation_steps=4,
         learning_rate=config.training_arguments.learning_rate,
@@ -608,27 +651,15 @@ def main(config):
         #label_names=["verified"]
     )
 
-    if model.ue_head.model_type == "claim":
-        def dataset_filter(inst):
-            return len(inst['claims']) > 0
+    def dataset_filter(inst):
+        return len(inst['claims']) > 0
 
-        # tokenized_data = {
-        #     split: ds.filter(dataset_filter)
-        #     for split, ds in tokenized_data.items()
-        # }
-        tokenized_data = tokenized_data.filter(dataset_filter)
-        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
-    elif model.ue_head.model_type == "token":
-        data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
-    
+    tokenized_data = tokenized_data.filter(dataset_filter)
+    data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
+
     callbacks = [LoggerCallback()]
     if config.do_save_checkpoints:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=3))
-
-    if model.ue_head.model_type == "claim":
-        f_eval = lambda eval_pred_: compute_metrics_claims(tokenized_data["test"], eval_pred_)
-    elif model.ue_head.model_type == "token":
-        f_eval = lambda eval_pred_: compute_metrics(tokenized_data["test"], eval_pred_)
 
     trainer = TrainerCustom(
         model=model,
@@ -638,7 +669,7 @@ def main(config):
         args=train_args,
         data_collator=data_collator,
         callbacks=callbacks,
-        compute_metrics=f_eval,
+        additional_eval_datasets=additional_test_datasets,
     )
 
     if config.do_hyperopt:
@@ -694,7 +725,7 @@ def main(config):
                 trainer.train(ignore_keys_for_eval=["logits"])
             except KeyboardInterrupt:
                 log.info("Training interrupted.")
-                
+
             log.info("Done with training.")
 
             if config.do_save_final_model:
@@ -723,15 +754,15 @@ def main(config):
             log.info("Predicting...")
             predictions = trainer.predict(tokenized_data["test"])
             log.info("Done with prediction.")
-            
+
             save_dataset = Dataset.from_dict({
-                "logits" : predictions[0][0], 
-                "uncertainty_logits" : predictions[0][1]})
-        
+                "logits": predictions[0][0],
+                "uncertainty_logits": predictions[0][1]})
+
             save_path = Path(output_dir) / "predictions"
             log.info(f"Saving predictions to {save_path}")
             save_dataset.save_to_disk(save_path)
-            
+
 
 if __name__ == "__main__":
     main()
