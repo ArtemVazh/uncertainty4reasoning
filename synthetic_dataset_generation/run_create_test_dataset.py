@@ -1,14 +1,28 @@
 import argparse
 from datasets import load_dataset, Dataset, load_from_disk
+import os
+import pandas as pd
 
 
 def main(args):
     with open(args.prompt_file, 'r') as f:
         prompt_template = f.read()
-    if 'local' in str(args.dataset_path):
-        dataset = load_from_disk(args.dataset_path[1])[args.dataset_split]
-    else:
+    
+    # Handle both file paths and HuggingFace dataset paths
+    if isinstance(args.dataset_path, str):
+        # Load from local file
+        if args.dataset_path.endswith('.csv'):
+            df = pd.read_csv(args.dataset_path)
+        else:
+            df = pd.read_json(args.dataset_path, lines=True)
+        df_new = df[[args.question_col, args.answer_col]]   
+        dataset = Dataset.from_pandas(df_new)
+    elif isinstance(args.dataset_path, tuple):
+        # Load from HuggingFace dataset
         dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
+    else:
+        raise ValueError("dataset_path must be either a file path (str) or a HuggingFace dataset tuple")
+    
     # Slice dataset if needed
     if args.start_index is not None:
         dataset = dataset.select(range(args.start_index, len(dataset)))
@@ -20,7 +34,7 @@ def main(args):
     # Format questions and extract answers
     questions, answers = [], []
     for inst in dataset:
-        if 'strategy_qa' in args.dataset_path:
+        if 'strategy_qa' in str(args.dataset_path):
             questions.append(prompt_template.format(q=inst[args.question_col]))
             def parse_strategy_qa_answer(example):
                 answer_str = ""
@@ -32,7 +46,7 @@ def main(args):
                     answer_str += f"{i+1}. {fact} "
                 return answer_str
             answers.append(parse_strategy_qa_answer(inst))
-        elif 'science_qa' in args.dataset_path:
+        elif 'science_qa' in str(args.dataset_path):
             def parse_science_qa_question(example):
                 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                 question = example["question"]
@@ -61,17 +75,20 @@ def main(args):
 
 
 def parse_tuple(s):
+    if ',' not in s:
+        # If no comma, treat as a file path
+        return s
     try:
         parts = s.strip("()").split(",")
         return tuple(part.strip() for part in parts)
     except Exception:
-        raise argparse.ArgumentTypeError("Tuple must be in the form: value1,value2")
+        raise argparse.ArgumentTypeError("Input must be either a file path or a tuple in the form: value1,value2")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Prepare test dataset with prompt formatting.")
-    parser.add_argument('--dataset-path', type=parse_tuple, default=("openai/gsm8k", "main"),
-                        help='Path to the dataset as a tuple, e.g. "openai/gsm9k,main')
+    parser.add_argument('--dataset-path', type=parse_tuple,
+                        help='Either a local file path or a HuggingFace dataset tuple (e.g. "openai/gsm8k,main")')
     parser.add_argument('--dataset-split', type=str, default='test', help='Dataset split to load')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')

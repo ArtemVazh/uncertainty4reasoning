@@ -28,10 +28,12 @@ class AutoUncertaintyHead:
         base_model,
         revision: str = "main",
         use_auth_token: str = None,
-    ):
+    ):  
         if os.path.isdir(pretrained_path):
+            print(f"Loading uncertainty head from {pretrained_path}")
             cfg = os.path.join(pretrained_path, "config.yaml")
         else:
+            print(f"Loading uncertainty head from huggingface {pretrained_path}")
             cfg = hf_hub_download(  # TODO: implement via hf models
                 repo_id=pretrained_path,
                 filename="config.yaml",

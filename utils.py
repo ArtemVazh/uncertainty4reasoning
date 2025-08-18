@@ -74,8 +74,9 @@ def print_test_stats(
     claim_extractor = StepsExtractor()
     tokenizer = AutoTokenizer.from_pretrained(model_path, cache_dir=hf_cache)
     claims = claim_extractor(man.stats, man.stats['input_texts'], model=Namespace(tokenizer=tokenizer))["claims"]
-    targets = np.array(man.gen_metrics['claim', 'StepFactCheck'])
-
+    print(man.gen_metrics['claim', 'StepFactCheck_correctness'])
+    targets = np.array(man.gen_metrics['claim', 'StepFactCheck_correctness'])
+    import ipdb; ipdb.set_trace()
     acc, last_tgt = [], 0
     for t, h, cl in zip(man.stats['target_texts'], man.stats['greedy_texts'], claims):
         if has_final_ans:

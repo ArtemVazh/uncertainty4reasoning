@@ -73,16 +73,16 @@ class GreedyProbsCalculator(StatCalculator):
         batch: Dict[str, torch.Tensor] = model.tokenize(texts)
         batch = {k: v.to(model.device()) for k, v in batch.items()}
         with torch.no_grad():
-            out = model.generate(
+            generation_args = {
                 **batch,
-                output_scores=True,
-                return_dict_in_generate=True,
-                max_new_tokens=max_new_tokens,
-                min_new_tokens=2,
-                output_attentions=self.output_attentions,
-                output_hidden_states=True,
-                num_return_sequences=1,
-                suppress_tokens=(
+                "output_scores": True,
+                "return_dict_in_generate": True,
+                "max_new_tokens": max_new_tokens,
+                "min_new_tokens": 2,
+                "output_attentions": self.output_attentions,
+                "output_hidden_states": True,
+                "num_return_sequences": 1,
+                "suppress_tokens": (
                     []
                     if model.generation_parameters.allow_newlines
                     else [
@@ -91,7 +91,12 @@ class GreedyProbsCalculator(StatCalculator):
                         if "\n" in model.tokenizer.decode([t])
                     ]
                 ),
-            )
+            }
+            if not hasattr(self, '_printed_args'):
+                print(f"[GreedyProbsCalculator] Generation args: {generation_args}")
+                print(f"[GreedyProbsCalculator] Model generation_parameters: {model.generation_parameters}")
+                self._printed_args = True
+            out = model.generate(**generation_args)
             logits = torch.stack(out.scores, dim=1)
 
             sequences = out.sequences

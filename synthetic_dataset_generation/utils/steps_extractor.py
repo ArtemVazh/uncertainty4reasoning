@@ -5,7 +5,7 @@ class StepsExtractor(StatCalculator):
     def __init__(
             self,
             sent_separators: str = "\n",
-            skip_starts: list[str] = ['Reasoning Steps:'],
+            skip_starts: list[str] = ['Reasoning Steps:', 'SOLUTION:', '<start of response>','<end of response>'],
             progress_bar: bool = True,
     ):
         super().__init__()
@@ -97,5 +97,6 @@ class StepsExtractor(StatCalculator):
 def load_stat_calculator(config, builder):
     return StepsExtractor(
         sent_separators=getattr(config, "sent_separators", "\n"),
+        skip_starts=getattr(config, "skip_starts", ['Reasoning Steps:', 'SOLUTION:', '<start of response>','<end of response>']),
         progress_bar=getattr(config, "progress_bar", False),
     )

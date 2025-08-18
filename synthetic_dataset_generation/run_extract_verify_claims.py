@@ -1,6 +1,7 @@
 import numpy as np
 import argparse
 import random
+from tqdm import tqdm
 
 from datasets import load_from_disk, Dataset
 from transformers import AutoTokenizer
@@ -16,7 +17,7 @@ def get_question(dataset, i, prompt):
 def extract_tokens_of_reply(dataset, tokenizer, prompt):
     greedy_tokens = []
     inpt_ids = dataset["input_ids"]
-    for i in range(len(dataset)):
+    for i in tqdm(range(len(dataset)), desc="Extracting tokens"):
         question = get_question(dataset, i, prompt)
         question_tokens = tokenizer(question, return_tensors='pt')['input_ids'][0]
         greedy_tokens.append(inpt_ids[i][len(question_tokens):])
@@ -25,7 +26,7 @@ def extract_tokens_of_reply(dataset, tokenizer, prompt):
 
 def generate_targets(dataset, reply_tokens_all, key="verified"):
     targets = []
-    for idx in range(len(dataset)):
+    for idx in tqdm(range(len(dataset)), desc=f"Generating {key} targets"):
         reply_tokens = reply_tokens_all[idx]
         claims = dataset["claims"][idx]
         verified = dataset[key][idx]
@@ -40,6 +41,25 @@ def generate_targets(dataset, reply_tokens_all, key="verified"):
 
 def main(args):
     dataset = load_from_disk(args.dataset_path)
+    
+    # Apply start index and subset if specified
+    start_idx = args.start_idx
+    end_idx = len(dataset)
+
+    # Determine the end index based on subset size if provided
+    if args.subset is not None:
+        end_idx = min(start_idx + args.subset, len(dataset))
+        print(f"Using subset of {end_idx - start_idx} samples from index {start_idx} to {end_idx - 1} (exclusive of {end_idx})")
+    elif start_idx != 0:
+        print(f"Skipping the first {start_idx} samples (processing indices {start_idx} to {end_idx - 1})")
+
+    # print(dataset)
+    # import pdb; pdb.set_trace()
+    # Only perform selection when needed to avoid unnecessary dataset copy
+    if start_idx != 0 or args.subset is not None:
+        dataset = dataset.select(range(start_idx, end_idx))
+    # print(dataset)
+    # import pdb; pdb.set_trace()
     if args.sample > 0:
         unique_questions = []
         for q in dataset["question"]:
@@ -63,7 +83,7 @@ def main(args):
     print("Done.")
 
     print("Verifying claims...")
-    if any(x in args.dataset_path for x in ['gsm8k', 'math', 'proofnet']):
+    if any(x in args.dataset_path for x in ['gsm8k', 'math', 'proofnet','natural_plan']):
         stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
     elif 'strategy_qa' in args.dataset_path:
         def parse_strategy_qa_answer(dataset):
@@ -111,6 +131,8 @@ def main(args):
     correctness_labels = fact_checker_correctness(stats, None)
     informativeness_labels = fact_checker_informativeness(stats, None)
     print("Done.")
+    # print(verified)
+    # import pdb; pdb.set_trace()
 
     print("Generating targets...")
     result = dataset.to_dict()
@@ -120,8 +142,11 @@ def main(args):
         "informativeness": informativeness_labels,
     })
     new_dataset = Dataset.from_dict(result)
+    print('finish making new dataset')
     result["uncertainty_labels"] = generate_targets(new_dataset, greedy_tokens, key="verified")
+    print('finish making uncertainty labels')
     result["informativeness_labels"] = generate_targets(new_dataset, greedy_tokens, key="informativeness")
+    print('finish making informativeness labels')
     print("Done.")
 
     print(f"Saving data to: {args.save_path}")
@@ -158,6 +183,8 @@ if __name__ == '__main__':
     parser.add_argument("--anno-model", type=str, default="deepseek-reasoner")
     parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")
+    parser.add_argument("--subset", type=int, default=None, help="Number of samples to use from the dataset. If not specified, uses the full dataset.")
+    parser.add_argument("--start-idx", type=int, default=0, help="The starting index (offset) in the dataset to begin processing. Use this to skip already processed samples.")
     parser.add_argument("--sample", type=int, default=-1, help="Sampling for debugging.")
     parser.add_argument("--api-cache", type=str, default=None, help="Cache directory for API calls.")
 

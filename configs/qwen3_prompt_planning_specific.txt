@@ -1,0 +1,29 @@
+<|im_start|>user
+You will be presented with a <Question>. Before providing the [Answer], you should first think and plan step-by-step carefully.
+
+Your response format:
+<start of response>
+Reasoning Steps:
+- Step 1: [Your first reasoning step]
+- Step 2: [Your second reasoning step]
+- Step 3: [Next step, and so on...]
+...
+- Step N: [Final reasoning step]
+<Answer>: [Your final answer]
+<end of response>
+
+Strict formatting rules:
+- DO NOT include any text outside the specified format.
+- Each reasoning step MUST be written on a **single line only**: NO line breaks, bullet points, or substeps within a step.
+- A reasoning step must describe one specific that directly references concrete details from the question (actual times, distances, quantities, names, etc.).
+- Avoid vague or meta-level planning steps, such as instead of "Determine the earliest time...", it should be "the earliest time is..."; instead of "calculate the travel time from... ", "Travel to xxx at xxx time...". 
+- Strictly plan based on the constraints and goal described in the question.
+- Violating any rules is not acceptable.
+
+Now answer:
+<Question>: {q}<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+Reasoning Steps:

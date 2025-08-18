@@ -7,7 +7,8 @@ import uuid
 from hydra.core.hydra_config import HydraConfig
 
 import logging
-
+import os
+os.environ["TRANSFORMERS_NO_SAFE_LOAD"] = "1" 
 log = logging.getLogger("lm_polygraph")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -28,7 +29,9 @@ from lm_polygraph.utils.builder_enviroment_stat_calculator import (
 from lm_polygraph.utils.factory_estimator import FactoryEstimator
 from lm_polygraph.utils.factory_stat_calculator import StatCalculatorContainer
 from synthetic_dataset_generation.utils.step_fact_check import StepFactCheck
-
+from transformers import modeling_utils
+if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none","colwise",'rowwise']
 hydra_config = Path(os.environ.get("HYDRA_CONFIG", ""))
 
 
@@ -117,7 +120,7 @@ def main(args):
 
         builder_env_stat_calc = BuilderEnvironmentStatCalculator(model=model)
         available_stat_calculators = get_stat_calculator_names(args)
-
+        print(args.max_new_tokens)
         man = UEManager(
             data=dataset,
             model=model,
@@ -133,7 +136,6 @@ def main(args):
             max_new_tokens=args.max_new_tokens,
             log_time=getattr(args, "log_time", False),
         )
-
         try:
             man()
         except Exception as e:
@@ -144,13 +146,44 @@ def main(args):
             man.save(save_path)
             if hasattr(args, "hf_save_path"):
                 man.push_to_hub(args.hf_save_path)
-
+        
         if hasattr(args, "report_to_wandb") and args.report_to_wandb:
-            wandb.log({str(k) : v for k, v in man.gen_metrics})
-            wandb.log({str(k) : v for k, v in man.metrics.items()})
-
+            try:
+                # Log metrics with some safeguards
+                gen_metrics_dict = {str(k): v for k, v in man.gen_metrics if isinstance(v, (int, float, str, bool))}
+                metrics_dict = {str(k): v for k, v in man.metrics.items() if isinstance(v, (int, float, str, bool))}
+                
+                if gen_metrics_dict:
+                    wandb.log(gen_metrics_dict)
+                if metrics_dict:
+                    wandb.log(metrics_dict)
+            except Exception as e:
+                log.warning(f"Failed to log metrics to wandb: {e}")
+            
     if hasattr(args, "report_to_wandb") and args.report_to_wandb:
-        wandb.finish()
+        try:
+            # Add timeout to wandb.finish() to prevent hanging
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("wandb.finish() timed out")
+            
+            # Set timeout for 30 seconds
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(180)
+            
+            wandb.finish()
+            signal.alarm(0)  # Cancel the alarm
+            
+        except TimeoutError:
+            log.warning("wandb.finish() timed out, forcing exit")
+            try:
+                # Try to finish without syncing
+                wandb.finish(exit_code=0, quiet=True)
+            except:
+                pass
+        except Exception as e:
+            log.warning(f"Error during wandb.finish(): {e}")
 
 
 
@@ -159,11 +192,21 @@ def get_ue_metrics(args):
         PredictionRejectionArea(),
         PredictionRejectionArea(max_rejection=0.5),
     ]
-    if getattr(args, "use_claim_ue", False):
-        ue_metrics += [
-            ROCAUC(),
-            PRAUC(),
-        ]
+    
+    # Only add ROC AUC metrics if we have generation_metrics defined that produce binary labels
+    # For example, StepFactCheck or other fact-checking metrics
+    if getattr(args, "use_claim_ue", False) and hasattr(args, "generation_metrics") and args.generation_metrics:
+        # Check if any of the generation metrics are fact-checking metrics that produce binary labels
+        has_binary_metrics = any(
+            metric.get("name") in ["StepFactCheck", "OpenAIFactCheck"] 
+            for metric in args.generation_metrics
+        )
+        if has_binary_metrics:
+            ue_metrics += [
+                ROCAUC(),
+                PRAUC(),
+            ]
+    
     return ue_metrics
 
 
@@ -198,7 +241,7 @@ def get_stat_calculator_names(config):
             builder=stat_calculator.builder,
         )
         all_stat_calculators.append(sc)
-
+    print(f'all_stat_calculators: {all_stat_calculators}')
     return all_stat_calculators
 
 
@@ -232,18 +275,18 @@ def get_generation_metrics(args):
             ),
             AlignScore(target_is_claims=False if args.task == "ats" else True),
         ]
-        if getattr(args.model, "type", "Whitebox") != "Blackbox":
-            if getattr(args, "use_claim_ue", False):
-                result += [
-                    OpenAIFactCheck(
-                        cache_path=args.cache_path,
-                        language=getattr(args, "language", "en"),
-                        n_threads=getattr(args, "n_threads", 1),
-                    )
-                ]
-        if args.task == "nmt":
-            ignore_regex = getattr(args, "source_ignore_regex", None)
-            result += [Comet(source_ignore_regex=ignore_regex)]
+        # if getattr(args.model, "type", "Whitebox") != "Blackbox":
+        #     if getattr(args, "use_claim_ue", False):
+        #         result += [
+        #             OpenAIFactCheck(
+        #                 cache_path=args.cache_path,
+        #                 language=getattr(args, "language", "en"),
+        #                 n_threads=getattr(args, "n_threads", 1),
+        #             )
+        #         ]
+        # if args.task == "nmt":
+        #     ignore_regex = getattr(args, "source_ignore_regex", None)
+        #     result += [Comet(source_ignore_regex=ignore_regex)]
     else:
         result = []
         for metric in generation_metrics:

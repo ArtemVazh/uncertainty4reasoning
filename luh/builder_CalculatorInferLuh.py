@@ -3,6 +3,7 @@ from .calculator_infer_luh import CalculatorInferLuh
 
 
 def load_stat_calculator(config, builder):
+    print(f"[CalculatorInferLuh Builder] Loading UHead from path: {config.uq_head_path}")
     uncertainty_head = AutoUncertaintyHead.from_pretrained(
         config.uq_head_path, 
         builder.model.model)

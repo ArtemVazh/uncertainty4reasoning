@@ -22,7 +22,7 @@ use_claim_ue: true
 generation_metrics: [{
   'name': 'StepFactCheck',
   'kwargs': {
-    'prompt_file': 'configs/qwen3_prompt.txt',
+    'prompt_file': 'configs/qwen3_prompt_general.txt',
     'model': 'deepseek-reasoner',
     'n_threads': 16,
     'progress_bar': false
@@ -32,9 +32,9 @@ generation_metrics: [{
 estimators:
   - name: RandomBaselineClaim
   - name: MaximumClaimProbability
-#  - name: ClaimConditionedProbabilityClaim  # quite computationally intensive
-#    cfg:
-#      nli_context: "fact_pref"
+  # - name: ClaimConditionedProbabilityClaim
+  #   cfg:
+  #     nli_context: "fact_pref"
   - name: MaxTokenEntropyClaim
   - name: PerplexityClaim
   - name: luh.builder_LuhClaimEstimatorDummy
@@ -57,10 +57,12 @@ stat_calculators:
       predict_token_uncertainties: false
       uq_head_path: "rediska0123/uhead_Qwen2.5-Math-7B"
       args_generate:
-        max_new_tokens: 256
+        max_new_tokens: 1024
         min_new_tokens: 2
-        temperature: 0.
-        do_sample: false
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 50
+        do_sample: true
         repetition_penalty: 1.
         diversity_penalty: 0.
         length_penalty: 1.
@@ -88,10 +90,10 @@ stat_calculators:
     stats:
       - "uncertainty_claim_logits"
 
-max_new_tokens: 256
+max_new_tokens: 1024
 ignore_exceptions: false
 language: en
-batch_size: 16
+batch_size: 1
 deberta_batch_size: 100
 seed:
     - 1

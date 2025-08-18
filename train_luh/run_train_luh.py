@@ -2,6 +2,8 @@ import hydra
 from pathlib import Path
 import os
 import json
+import sys
+import warnings
 from scipy.special import expit
 from sklearn.metrics import (
     roc_auc_score,
@@ -17,6 +19,7 @@ from hydra.core.hydra_config import HydraConfig
 import numpy as np
 import random
 from itertools import chain
+from collections import defaultdict
 
 import torch
 import torch.nn.init as init
@@ -25,6 +28,7 @@ from datasets import DatasetDict, Dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    AutoConfig,
     DataCollatorForLanguageModeling,
     EarlyStoppingCallback,
     Trainer,
@@ -40,7 +44,13 @@ from luh.utils import load_any_dataset
 from luh import AutoUncertaintyHead
 
 import logging
+from transformers import modeling_utils
+import os
+import pandas as pd
+from datasets import Dataset
 
+if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
+    modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none", "colwise", 'rowwise']
 transformers_logging.set_verbosity_info()
 transformers_logging.enable_default_handler()
 
@@ -64,14 +74,36 @@ def load_model(config):
     config.model.torch_dtype = globals().get(config.model.torch_dtype)
 
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
+
+    # For DeepSpeed, load model on CPU initially to avoid OOM
+    # DeepSpeed will handle the GPU distribution
+    if hasattr(config, 'deepspeed_config') and config.deepspeed_config:
+        device_map = "cpu"
+        log.info("Using CPU device map for initial loading due to DeepSpeed configuration")
+    else:
+        device_map = config.model.device_map
+
     base_model = AutoModelForCausalLM.from_pretrained(
         config.model.pretrained_model_name_or_path,
-        # torch_dtype=torch.float16,  # Had to comment for Qwen-Math-1.5B
+        torch_dtype=config.model.torch_dtype,  # Use the configured dtype
         trust_remote_code=True,
-        device_map=config.model.device_map,
+        device_map=device_map,  # Use CPU for DeepSpeed, config device_map otherwise
+        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
+    base_model.config.attn_implementation = "eager"
+
+    # Do not enable gradient checkpointing when the base model is frozen (no parameters require gradients).
+    # Enabling it in that case triggers the warning:
+    # "None of the inputs have requires_grad=True" and wastes memory.
+    if any(p.requires_grad for p in base_model.parameters()):
+        if hasattr(base_model, "gradient_checkpointing_enable"):
+            base_model.gradient_checkpointing_enable()
+        base_model.config.use_cache = False  # Disable KV cache when using checkpointing
+    else:
+        # Keep cache enabled for faster inference since we're not using gradient checkpointing
+        base_model.config.use_cache = True
 
     if config.ue_layer.path:
         uq_head = AutoUncertaintyHead.from_pretrained(config.ue_layer.path, base_model)
@@ -80,7 +112,8 @@ def load_model(config):
         uq_head = AutoUncertaintyHead.from_config(config.ue_layer.head_cfg, base_model)
 
         def reinitialize_weights(module):
-            if hasattr(module, "weight") and module.weight is not None and (not(hasattr(module, "name") and "positional_encoding" in module.name)):
+            if hasattr(module, "weight") and module.weight is not None and (
+                    not (hasattr(module, "name") and "positional_encoding" in module.name)):
                 if module.weight.ndim >= 2:
                     init.xavier_uniform_(module.weight)
                 else:
@@ -90,20 +123,18 @@ def load_model(config):
 
         uq_head.apply(reinitialize_weights)
 
-    if uq_head.model_type == "claim":
-        model = CausalLMWithUncertaintyLayerClaim(
-            base_model,
-            ue_head=uq_head,
-            ue_pos_weight=config.ue_layer.pos_weight,
-            output_attention=uq_head.output_attentions,
-        )
-    elif uq_head.model_type == "token":
-        model = CausalLMWithUncertaintyLayer(
-            base_model,
-            ue_head=uq_head,
-            ue_pos_weight=config.ue_layer.pos_weight,
-            output_attention=uq_head.output_attentions,
-        )
+    model = CausalLMWithUncertaintyLayerClaim(
+        base_model,
+        ue_head=uq_head,
+        ue_pos_weight=config.ue_layer.pos_weight,
+        output_attention=uq_head.output_attentions,
+    )
+
+    # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
+    if hasattr(base_model, 'dtype'):
+        model.ue_head = model.ue_head.to(dtype=base_model.dtype)
+    elif config.model.torch_dtype:
+        model.ue_head = model.ue_head.to(dtype=config.model.torch_dtype)
 
     for name, param in model.named_parameters():
         if "ue_head" in name:
@@ -137,12 +168,33 @@ def load_data(config, tokenizer):
     if "test" not in dataset:
         log.info("Performing train-test split...")
         tokenized_data = tokenized_data.train_test_split(
-            test_size=config.dataset.test_size
+            test_size=config.dataset.test_size,
+            seed=42,
         )
 
     else:
         val_dataset_name = config.dataset.validation if hasattr(config.dataset, "validation") else "eval"
         tokenized_data = DatasetDict({"train": tokenized_data, "test": dataset[val_dataset_name]})
+
+    # Add subset functionality for debugging
+    if hasattr(config.dataset, 'subset') and config.dataset.subset is not None:
+        subset_size = config.dataset.subset
+        log.info(f"Using subset of {subset_size} samples for debugging...")
+
+        # Suppress gradient checkpointing warnings for small subsets
+        # These warnings are expected when batches have no trainable parameters
+        warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True")
+
+        # Apply subset to training data
+        if len(tokenized_data["train"]) > subset_size:
+            tokenized_data["train"] = tokenized_data["train"].select(range(subset_size))
+            log.info(f"Training dataset reduced to {len(tokenized_data['train'])} samples")
+
+        # Apply subset to test data (use smaller subset for faster evaluation)
+        test_subset_size = min(subset_size // 4, len(tokenized_data["test"]))  # Use 1/4 of subset size for test
+        if len(tokenized_data["test"]) > test_subset_size and test_subset_size > 0:
+            tokenized_data["test"] = tokenized_data["test"].select(range(test_subset_size))
+            log.info(f"Test dataset reduced to {len(tokenized_data['test'])} samples")
 
     def prompt_tokens(inst):
         PROMPT = open(config.dataset.prompt_path, 'r').read()
@@ -151,10 +203,40 @@ def load_data(config, tokenizer):
         return {"prompt_tokens": input_ids}
 
     tokenized_data = tokenized_data.map(prompt_tokens)
-    log.info(f"Length of the training dataset: {len(tokenized_data['train'])}")
-    log.info(f"Length of the testing dataset: {len(tokenized_data['test'])}")
+    log.info(f"Final length of the training dataset: {len(tokenized_data['train'])}")
+    log.info(f"Final length of the testing dataset: {len(tokenized_data['test'])}")
 
     return tokenized_data
+
+
+def load_additional_test_datasets(config, tokenizer):
+    if not getattr(config, "additional_test_datasets", {}):
+        return {}
+
+    additional_datasets = {}
+    PROMPT = open(config.dataset.prompt_path, 'r').read()
+
+    def prompt_tokens(inst):
+        inp = PROMPT.format(q=inst["question"])
+        input_ids = tokenizer(inp, return_tensors='pt')['input_ids'][0]
+        return {"prompt_tokens": input_ids}
+
+    for name, path in config.additional_test_datasets.items():
+        log.info(f"Loading additional test dataset '{name}' from: {path}")
+        dataset = load_any_dataset(path, config)
+        if "test" in dataset:
+            dataset_test = dataset["test"]
+        else:
+            log.info("Performing train-test split...")
+            dataset_test = dataset['train'].train_test_split(
+                test_size=config.dataset.test_size,
+                seed=42,
+            )['test']
+        dataset_test = dataset_test.map(prompt_tokens)
+        additional_datasets[name] = dataset_test
+        log.info(f"Loaded additional dataset '{name}' with {len(dataset_test)} examples.")
+
+    return additional_datasets
 
 
 # def _add_attention_mask(e):
@@ -169,9 +251,9 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         super().__init__(tokenizer, *args, **kwargs)
 
     def torch_call(self, examples):
-        #examples = [_add_attention_mask(e) for e in examples]
+        # examples = [_add_attention_mask(e) for e in examples]
         # ex = [{"input_ids": e["input_ids"], "attention_mask": e["attention_mask"]} for e in examples]
-        #examples = [_add_attention_mask(e) for e in examples]
+        # examples = [_add_attention_mask(e) for e in examples]
         # ex = [
         #     {k: v for k, v in e.items() if k not in [
         #         "uncertainty_labels", "reply"
@@ -182,17 +264,15 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         batch_size = len(examples)
 
         # Do padding of input_ids
-        batch = super().torch_call([{'input_ids' : e['input_ids']} for e in examples]) 
-
+        batch = super().torch_call([{'input_ids': e['input_ids']} for e in examples])
 
         # Construct context lengths
         context_lengths = []
         for i in range(batch_size):
             reply_len = len(examples[i]['input_ids']) - len(examples[i]['prompt_tokens'])
             context_lengths.append(batch["input_ids"][i].shape[0] - reply_len)
-        
-        batch["context_lengths"] = torch.tensor(context_lengths)
 
+        batch["context_lengths"] = torch.tensor(context_lengths)
 
         # Do padding of labels
         all_padded_labels = []
@@ -217,7 +297,6 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         #     batch["uncertainty_labels"][i] = torch.tensor(all_padded_labels[i])
         batch["uncertainty_labels"] = torch.tensor(all_padded_labels)
 
-
         # context_lengths = []
         # for i in range(len(batch["input_ids"])):
         #     reply = examples[i]["reply"]
@@ -227,11 +306,11 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
         #     while ctx < len(input_ids) and len(self._tokenizer.decode(input_ids[:ctx + 1])) <= pref_len:
         #         ctx += 1
         #     context_lengths.append(ctx)
-        
+
         # batch["context_lengths"] = torch.tensor(context_lengths)
         # print("After:=========",  batch["uncertainty_labels"])
         return batch
-    
+
 
 class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguageModeling):
     def __init__(self, tokenizer, *args, **kwargs):
@@ -252,25 +331,22 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
             print('Claim token positions:', claim_token_positions)
             raise e
         return (context_length + torch.tensor(adjusted_positions)).int()
-    
 
     def torch_call(self, examples):
         batch_size = len(examples)
 
         # Do padding
-        batch = super().torch_call([{'input_ids' : e['input_ids']} for e in examples]) 
-
+        batch = super().torch_call([{'input_ids': e['input_ids']} for e in examples])
 
         # Construct context lengths
         context_lengths = []
         for i in range(batch_size):
             reply_len = len(examples[i]['input_ids']) - len(examples[i]['prompt_tokens'])
             context_lengths.append(batch["input_ids"][i].shape[0] - reply_len)
-        
+
         batch["context_lengths"] = torch.tensor(context_lengths)
 
         log.info(f'CONTEXT LENGTHS: {context_lengths}')
-
 
         # Construct claim tensors
         all_claim_tensors = []
@@ -279,40 +355,40 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
             full_len = batch["input_ids"].shape[1]
             for claim in examples[i]["claims"]:
                 mask = torch.zeros(batch["input_ids"][i].shape, dtype=int)
-                claim_token_positions = self._adjust_claim_positions(batch["context_lengths"][i], batch["input_ids"][i], claim)
+                claim_token_positions = self._adjust_claim_positions(batch["context_lengths"][i], batch["input_ids"][i],
+                                                                     claim)
                 if any(e > mask.shape[0] for e in claim_token_positions):
                     print("Error")
-                
+
                 mask[claim_token_positions] = 1
-                instance_claims.append(mask[1:]) # ignoring <s>
+                instance_claims.append(mask[1:])  # ignoring <s>
 
-            all_claim_tensors.append(torch.stack(instance_claims) if len(instance_claims) > 0 else torch.zeros(0, full_len - 1, dtype=int))
-        
+            all_claim_tensors.append(
+                torch.stack(instance_claims) if len(instance_claims) > 0 else torch.zeros(0, full_len - 1, dtype=int))
+
         batch["claims"] = all_claim_tensors
-
 
         # Construct labels
         all_labels = []
         for i in range(len(examples)):
             uncertainty_labels = examples[i]["verified"]
             all_labels.append([e if not np.isnan(e) else -100 for e in uncertainty_labels])
-        
+
         batch["verified"] = all_labels
 
-        
         dict_batch = dict(batch)
         return dict_batch
 
 
 def compute_claim_level_metrics(tokenized_data, logits):
     from itertools import chain
-    
+
     claim_level_targets = list(chain(*tokenized_data["verified"]))
 
     num_instances = logits.shape[0]
     claim_level_preds = []
     for i in range(num_instances):
-        prompt_tokens = tokenized_data[i]["prompt_tokens"] # TODO: this is incorrect due to padding 
+        prompt_tokens = tokenized_data[i]["prompt_tokens"]  # TODO: this is incorrect due to padding
         generated_tokens = tokenized_data[i]["input_ids"][len(prompt_tokens):]
         context_length = logits[i].shape[0] - len(generated_tokens)  # To mitigate padding 
         for claim in tokenized_data["claims"][i]:
@@ -335,7 +411,7 @@ def compute_claim_level_metrics(tokenized_data, logits):
 def compute_metrics(tokenized_data, eval_pred):
     logits, labels = eval_pred
     labels = labels[1]
-    labels = labels[:, 1:] # Shifting labels
+    labels = labels[:, 1:]  # Shifting labels
     logits = logits[1] if type(logits) is tuple else logits
 
     mask = (labels != -100).reshape(-1)
@@ -379,9 +455,8 @@ def compute_metrics(tokenized_data, eval_pred):
 
 def compute_metrics_claims(tokenized_data, eval_pred):
     logits, labels = eval_pred
-    
-    labels = np.asarray([e if not np.isnan(e) else -100  for e in list(chain(*tokenized_data["verified"]))])
 
+    labels = np.asarray([e if not np.isnan(e) else -100 for e in list(chain(*tokenized_data["verified"]))])
 
     mask = (labels != -100).reshape(-1)
     labels = labels.reshape(-1)[mask]
@@ -417,18 +492,85 @@ class LoggerCallback(TrainerCallback):
             log.info(logs)
 
 
-class TrainerCustom(Trainer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+from collections import defaultdict
+import numpy as np
+from datasets import Dataset
+from transformers import Trainer
 
-    def evaluate(
-        self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"
+
+class TrainerCustom(Trainer):
+    def __init__(
+            self,
+            *args,
+            eval_dataset: Dataset,
+            additional_eval_datasets: dict[str, Dataset] | None = None,
+            **kwargs,
     ):
-        return super().evaluate(
-            eval_dataset=eval_dataset,
-            ignore_keys=["logits"],
-            metric_key_prefix=metric_key_prefix,
+        super().__init__(*args, **kwargs, eval_dataset=eval_dataset)
+        self.eval_dataset = eval_dataset
+        self.additional_eval_datasets = additional_eval_datasets or {}
+
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
+        """
+        Emits:
+          - main eval:                   eval_<metric>
+          - per-additional-dataset:      eval_<ds_name>_<metric>
+          - means (all sets):            eval_mean_<metric>
+        """
+        results: dict[str, float] = {}
+        avg_metrics = {"accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"}
+        buckets = defaultdict(list)  # metric -> [values from main eval + all additional evals]
+
+        # ---- Main eval set ----
+        self.compute_metrics = lambda eval_pred: compute_metrics_claims(self.eval_dataset, eval_pred)
+        base_eval_ds = self.eval_dataset if eval_dataset is None else eval_dataset
+        base_metrics = super().evaluate(
+            eval_dataset=base_eval_ds,
+            ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
+            metric_key_prefix="eval",
         )
+        # base_metrics keys like "eval_f1", "eval_pr_auc", plus loss/runtime/etc.
+        for k, v in base_metrics.items():
+            if k.startswith("eval_"):
+                metric = k[len("eval_"):]  # "f1", "roc_auc", ...
+                val = float(v)
+                # nice hierarchy + table-friendly alias
+                results[f"eval_{metric}"] = val
+                if metric in avg_metrics:
+                    buckets[metric].append(val)
+            else:
+                results[k] = v
+
+        # ---- Additional datasets ----
+        for name, ds in self.additional_eval_datasets.items():
+            self.compute_metrics = (lambda eval_pred, d=ds: compute_metrics_claims(d, eval_pred))
+            m = super().evaluate(
+                eval_dataset=ds,
+                ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
+                metric_key_prefix=f"eval_{name}",
+            )
+            for k, v in m.items():
+                if not k.startswith(f"eval_{name}_"):
+                    # preserve any unexpected extras under a namespaced key
+                    results[f"{name}_{k}"] = v
+                    continue
+                metric = k[len(f"eval_{name}_"):]
+                val = float(v)
+                results[f"eval_{name}_{metric}"] = val
+                if metric in avg_metrics:
+                    buckets[metric].append(val)
+
+        mean_results = {}
+        for metric, vals in buckets.items():
+            if not vals:
+                continue
+            mean_val = float(np.mean(vals))
+            mean_results[f"eval_mean_{metric}"] = mean_val
+            results[f"eval_mean_{metric}"] = mean_val
+
+        self.log(mean_results)
+
+        return results
 
 
 def wandb_save_directory(directory_path):
@@ -469,7 +611,7 @@ def main(config):
             if path["schema"] == "file"
         ][0]
         wandb_cfg["HYDRA_CONFIG"] = (
-            Path(config_path_hydra) / HydraConfig.get().job.config_name
+                Path(config_path_hydra) / HydraConfig.get().job.config_name
         )
         os.environ["WANDB_DIR"] = str(Path(output_dir))
         project = os.environ["WANDB_PROJECT"]
@@ -521,13 +663,15 @@ def main(config):
     log.info("Loading dataset...")
 
     tokenized_data = load_data(config, tokenizer)
+    additional_test_datasets = load_additional_test_datasets(config, tokenizer)
     log.info("Done.")
     log.info(repr(tokenized_data))
 
     train_args = TrainingArguments(
         num_train_epochs=config.training_arguments.num_train_epochs,
         per_device_train_batch_size=config.training_arguments.per_device_train_batch_size,
-        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size, # TODO: add parameter for eval batch size
+        per_device_eval_batch_size=config.training_arguments.per_device_train_batch_size,
+        # TODO: add parameter for eval batch size
         gradient_accumulation_steps=config.training_arguments.gradient_accumulation_steps,
         eval_accumulation_steps=4,
         learning_rate=config.training_arguments.learning_rate,
@@ -538,7 +682,8 @@ def main(config):
         # fp16=True,  # Had to comment for Qwen2.5-Math-1.5B, othervise it output nan logits and attentions
         # fp16_full_eval=False,
         load_best_model_at_end=True if config.do_save_checkpoints else False,
-        metric_for_best_model="pr_auc",
+        metric_for_best_model="eval_mean_f1",
+        greater_is_better=True,
         eval_strategy="epoch",
         logging_strategy="epoch",
         save_strategy="epoch" if config.do_save_checkpoints else "no",
@@ -548,31 +693,20 @@ def main(config):
         include_num_input_tokens_seen=True,
         gradient_checkpointing=False,
         dataloader_num_workers=1,
-        remove_unused_columns=False
-        #label_names=["verified"]
+        remove_unused_columns=False,
+        save_total_limit=getattr(config.training_arguments, 'save_total_limit', 3),  # Add missing save_total_limit
+        # label_names=["verified"]
     )
 
-    if model.ue_head.model_type == "claim":
-        def dataset_filter(inst):
-            return len(inst['claims']) > 0
+    def dataset_filter(inst):
+        return len(inst['claims']) > 0
 
-        # tokenized_data = {
-        #     split: ds.filter(dataset_filter)
-        #     for split, ds in tokenized_data.items()
-        # }
-        tokenized_data = tokenized_data.filter(dataset_filter)
-        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
-    elif model.ue_head.model_type == "token":
-        data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
-    
+    tokenized_data = tokenized_data.filter(dataset_filter)
+    data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
+
     callbacks = [LoggerCallback()]
     if config.do_save_checkpoints:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=3))
-
-    if model.ue_head.model_type == "claim":
-        f_eval = lambda eval_pred_: compute_metrics_claims(tokenized_data["test"], eval_pred_)
-    elif model.ue_head.model_type == "token":
-        f_eval = lambda eval_pred_: compute_metrics(tokenized_data["test"], eval_pred_)
 
     trainer = TrainerCustom(
         model=model,
@@ -582,7 +716,7 @@ def main(config):
         args=train_args,
         data_collator=data_collator,
         callbacks=callbacks,
-        compute_metrics=f_eval,
+        additional_eval_datasets=additional_test_datasets,
     )
 
     if config.do_hyperopt:
@@ -590,7 +724,7 @@ def main(config):
         # For optimization with wandb, use the wandb sweep feature
 
         def compute_objective(metrics):
-            return metrics["eval_f1"]
+            return metrics["eval_mean_f1"]  # mean across all additional datasets
 
         def hp_space(trial):
             return {
@@ -638,7 +772,7 @@ def main(config):
                 trainer.train(ignore_keys_for_eval=["logits"])
             except KeyboardInterrupt:
                 log.info("Training interrupted.")
-                
+
             log.info("Done with training.")
 
             if config.do_save_final_model:
@@ -667,15 +801,15 @@ def main(config):
             log.info("Predicting...")
             predictions = trainer.predict(tokenized_data["test"])
             log.info("Done with prediction.")
-            
+
             save_dataset = Dataset.from_dict({
-                "logits" : predictions[0][0], 
-                "uncertainty_logits" : predictions[0][1]})
-        
+                "logits": predictions[0][0],
+                "uncertainty_logits": predictions[0][1]})
+
             save_path = Path(output_dir) / "predictions"
             log.info(f"Saving predictions to {save_path}")
             save_dataset.save_to_disk(save_path)
-            
+
 
 if __name__ == "__main__":
     main()

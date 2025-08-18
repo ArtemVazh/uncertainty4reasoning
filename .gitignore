@@ -25,6 +25,11 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+checkpoints/
+logs/
+bash_scripts/
+train_data/
+view_data.ipynb
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -177,3 +182,18 @@ configs/deepseek_api_key.txt
 
 runs/
 configs/scores_*.json
+# Project-specific directories
+wandb/
+workdir/
+logs/
+outputs/
+train_data/train_plan_Qwen3-8B_texts_bon_3_samples/
+train_data/train_plan_Qwen3-8B_texts_new_samples/
+train_data/
+planning_datasets/
+*.ipynb
+configs/deepseek_api_key.txt
+bash_scripts/
+diversity_sampling/
+test_data/
+CLAUDE.md

@@ -250,21 +250,32 @@ class CalculatorInferLuh(StatCalculator):
 
         device_batch = batch.to(model.device())
         log.info(f"Generating {max_new_tokens} new tokens on device={model.device()}...")
+        generation_args = {
+            **device_batch,
+            "output_scores": True,
+            "return_dict_in_generate": True,
+            "output_attentions": self.output_attentions,
+            "output_hidden_states": True,
+            "num_return_sequences": 1,
+            "generation_config": GenerationConfig.from_pretrained(model.model_path),
+            "pad_token_id": model.tokenizer.eos_token_id,
+            "tokenizer": model.tokenizer,
+            **self.args_generate,
+        }
+        if not hasattr(self, '_printed_args'):
+            print(f"[CalculatorInferLuh] Generation args: {generation_args}")
+            print(f"[CalculatorInferLuh] args_generate from config: {self.args_generate}")
+            self._printed_args = True
         start_time = time.time()
+        
+        # Debug breakpoint to inspect batch processing
+        # print(batch)
+        # import pdb; pdb.set_trace()
+        
         with torch.no_grad():
-            out = model.generate(
-                **device_batch,
-                output_scores=True,
-                return_dict_in_generate=True,
-                output_attentions=self.output_attentions,
-                output_hidden_states=True,
-                num_return_sequences=1,
-                generation_config=GenerationConfig.from_pretrained(model.model_path),
-                pad_token_id=model.tokenizer.eos_token_id,
-                tokenizer=model.tokenizer,
-                **self.args_generate,
-            )
+            out = model.generate(**generation_args)
         log.info(f"Done generating in {round(time.time() - start_time, 2)} seconds")
+        # import pdb; pdb.set_trace()
 
         result_dict = self.postprocess_predictions(batch, out, model.tokenizer)
         result_dict["input_texts"] = texts

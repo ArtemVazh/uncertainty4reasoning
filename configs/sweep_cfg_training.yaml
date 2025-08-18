@@ -1,0 +1,60 @@
+# sweep_config.yaml
+program: train_luh/run_train_luh.py  # The script you want to execute
+method: bayes
+metric:
+  name: eval/mean_f1
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+
+parameters:
+  training_arguments.learning_rate:
+      values: [5e-4, 1e-4, 5e-5, 1e-5]
+  training_arguments.warmup_ratio:
+      values: [0.0, 0.05, 0.1]
+  training_arguments.num_train_epochs:
+      values: [2, 3, 4, 5, 6]
+  training_arguments.gradient_accumulation_steps:
+      values: [16, 32, 64]
+  ue_layer.head_cfg.uncertainty_head.n_layers:
+        values: [1, 2]
+  ue_layer.head_cfg.uncertainty_head.n_heads:
+        values: [16, 32, 64]
+  ue_layer.pos_weight:
+      values: [4, 5, 6, 7]
+  ue_layer.head_cfg.uncertainty_head.head_dim:
+      values: [512, 1024, 2048]
+  ue_layer.head_cfg.feature_extractor.0.layer_nums:
+      values: [[-1], [-1, -5], [-1, -5, -15]]
+  ue_layer.head_cfg.feature_extractor.1.top_n:
+      values: [3, 5, 10, 20, 50]
+command:
+  - ${interpreter}
+  - ${program}
+  - --config-path=../configs
+  - --config-name=train_uhead_claim.yaml
+
+  # ----- fixed baseline overrides (can be overridden by ${args_no_hyphens}) -----
+  - model.pretrained_model_name_or_path=Qwen/Qwen3-8B
+  - dataset.path=hf:rediska0123/train_prm12k_Qwen3-8B
+  - dataset.prompt_path=configs/qwen3_prompt_general.txt
+
+  - do_train=true
+  - do_eval=true
+  - do_save_checkpoints=false          # faster sweeps
+  - do_save_final_model=false          # avoid saving large artifacts per run
+  - report_to=wandb
+
+  # your default run’s training scale
+  - training_arguments.gradient_accumulation_steps=32
+  - training_arguments.per_device_train_batch_size=1
+
+  # extra eval datasets (names appear in logs as eval/<name>_*)
+  - +additional_test_datasets.proofnet=hf:rediska0123/train_proofnet_Qwen3-8B_sampling
+  - +additional_test_datasets.gsm8k=hf:rediska0123/train_gsm8k_Qwen3-8B_sampling
+  - +additional_test_datasets.math=hf:rediska0123/train_math_Qwen3-8B_sampling
+
+  # ----- place W&B’s sampled params at the END so they override anything above -----
+  - ${args_no_hyphens}

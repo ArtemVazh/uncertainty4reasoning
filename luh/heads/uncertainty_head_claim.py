@@ -43,8 +43,15 @@ class UncertaintyHeadClaim(UncertaintyHeadBase):
         encoder_layer = nn.TransformerEncoderLayer(
                 d_model=head_dim, nhead=n_heads, dropout=dropout, activation="gelu", batch_first=True
             )
+        # Disable the automatic conversion to NestedTensor because it is not compatible with the
+        # src_key_padding_mask we pass (see https://github.com/pytorch/pytorch/issues/113739).
+        # Setting `enable_nested_tensor=False` keeps the input as a regular padded tensor and
+        # prevents the "MultiheadAttention does not support NestedTensor outside of its fast path"
+        # assertion that was raised during evaluation.
         self.transformer_encoder = nn.TransformerEncoder(
-                encoder_layer, num_layers=n_layers
+                encoder_layer,
+                num_layers=n_layers,
+                enable_nested_tensor=False,
             )
         
         self.classifier = nn.Sequential(
@@ -64,7 +71,8 @@ class UncertaintyHeadClaim(UncertaintyHeadBase):
         # log.debug(f'INFERRING FEATURES OF SHAPE {X.shape}: {X}')
         # log.debug(f'FEATURES ATTENTION MASK: {X_attn_mask.shape}')
 
-        features = X.to(torch.float32)
+        # Don't convert to float32 - maintain original dtype for mixed precision compatibility
+        features = X  # Remove .to(torch.float32)
         features = self.proj(features)
 
         src_key_padding_mask = (X_attn_mask == 0)

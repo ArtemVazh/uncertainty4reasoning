@@ -3,7 +3,7 @@ hydra:
     dir: ${output_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 model:
-  pretrained_model_name_or_path: Qwen/Qwen3-1.7B
+  pretrained_model_name_or_path: Qwen/Qwen3-8B
   device_map: cuda
   trust_remote_code: true
   torch_dtype: torch.float16
@@ -25,26 +25,22 @@ ue_layer:
       n_layers: 2
       n_heads: 8
       dropout: 0.1
-      mask_future_tokens: true
 dataset:
   path: hf:rediska0123/train_gsm8k_Qwen3-1.7B
   prompt_path: configs/qwen3_prompt.txt
   num_instances: 0
-  test_size: 0.1
+  test_size: 0
   validation: test
   label_key_claim: verified
   label_key_token: uncertainty_labels
-additional_test_datasets:
 training_arguments:
   num_train_epochs: 10
   learning_rate: 0.0001
   warmup_ratio: 0.05
   weight_decay: 0.1
-  gradient_accumulation_steps: 16
-  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 32
+  per_device_train_batch_size: 1
   max_grad_norm: 1.0
-  eval_strategy: epoch
-  save_total_limit: 1
 do_train: true
 do_eval: false
 do_hyperopt: false
@@ -53,5 +49,3 @@ do_save_final_model: true
 report_to: wandb
 output_dir: ./workdir/train
 do_predict: false
-deepspeed_config: null
-local_rank: null
