@@ -38,6 +38,7 @@ class UHeadEstimator(Estimator):
                 stats["uncertainty_claim_logits"],
                 stats["claims"],
         ):
+            # import pdb; pdb.set_trace()
             claim_ue = expit(sample_ls)
             seq_ue.append(self._reduce(claim_ue))
         return seq_ue

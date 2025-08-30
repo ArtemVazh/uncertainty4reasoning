@@ -1,6 +1,9 @@
 import argparse
 import os
 import logging
+import random
+import numpy as np
+import torch
 
 from datasets import load_dataset
 
@@ -25,6 +28,7 @@ def get_parser():
     parser.add_argument("--hf-cache", type=str, default=None, help="Path to HuggingFace cache directory")
     parser.add_argument("--model-path", type=str, default="Qwen/Qwen3-1.7B", help="Model name or path for generation")
     parser.add_argument("--device", type=str, default="auto", help="Device to use (e.g., 'cuda' or 'cpu')")
+    parser.add_argument("--subset", type=int, default=None, help="Only process first N samples from dataset")
     return parser
 
 
@@ -36,10 +40,23 @@ def load_model(model_path, device):
 
 
 def main(args):
+    # Set random seeds
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+    log.info(f"Set random seed to {args.seed}")
+    
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
     log.info(f"Loading dataset: {args.dataset_path} ({args.dataset_split})")
     dataset = load_dataset(args.dataset_path, split=args.dataset_split, cache_dir=args.hf_cache)
+    
+    if args.subset is not None:
+        log.info(f"Using subset: first {args.subset} samples")
+        dataset = dataset.select(range(min(args.subset, len(dataset))))
 
     log.info(f"Loading model: {args.model_path}")
     model = load_model(args.model_path, args.device)
