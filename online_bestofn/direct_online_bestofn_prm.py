@@ -36,7 +36,9 @@ class DirectOnlineBestOfNPRM:
         max_steps: int = 20,
         temperature: float = 0.7,
         device: str = "cuda",
-        verbose: bool = True
+        prm_device: str = None,
+        verbose: bool = True,
+        generation_batch_size: int = None
     ):
         self.model = model
         self.candidates_per_step = candidates_per_step
@@ -44,6 +46,7 @@ class DirectOnlineBestOfNPRM:
         self.temperature = temperature
         self.device = device
         self.verbose = verbose
+        self.generation_batch_size = generation_batch_size or candidates_per_step
         
         # Initialize components
         self.detector = StepBoundaryDetector(
@@ -64,7 +67,7 @@ class DirectOnlineBestOfNPRM:
         self.scorer = DirectPRMScorer(
             model=model,
             prm_model_path=prm_model_path,
-            device=device,
+            device=prm_device if prm_device else device,
             batch_size=candidates_per_step
         )
     
@@ -94,10 +97,15 @@ class DirectOnlineBestOfNPRM:
             # Generate candidates
             if self.verbose:
                 log.info(f"Generating candidates with temperature={self.temperature}")
-            candidates = self.step_generator.generate_candidates(
-                trajectory, 
-                verbose=self.verbose
-            )
+            
+            # Generate candidates in batches if needed
+            if self.generation_batch_size < self.candidates_per_step:
+                candidates = self._generate_candidates_in_batches(trajectory)
+            else:
+                candidates = self.step_generator.generate_candidates(
+                    trajectory, 
+                    verbose=self.verbose
+                )
             
             if not candidates:
                 if self.verbose:
@@ -161,6 +169,47 @@ class DirectOnlineBestOfNPRM:
             "completed": len(selected_steps) > 0
         }
     
+    def _generate_candidates_in_batches(self, trajectory: str) -> List:
+        """Generate candidates in smaller batches to avoid OOM"""
+        all_candidates = []
+        
+        # Calculate number of batches needed
+        num_batches = (self.candidates_per_step + self.generation_batch_size - 1) // self.generation_batch_size
+        
+        # Temporarily store original setting
+        original_candidates = self.step_generator.candidates_per_step
+        
+        try:
+            for batch_idx in range(num_batches):
+                # Calculate batch size for this iteration
+                start_idx = batch_idx * self.generation_batch_size
+                end_idx = min((batch_idx + 1) * self.generation_batch_size, self.candidates_per_step)
+                batch_size = end_idx - start_idx
+                
+                if self.verbose:
+                    log.info(f"Generating batch {batch_idx+1}/{num_batches} ({batch_size} candidates)")
+                
+                # Set batch size for this generation
+                self.step_generator.candidates_per_step = batch_size
+                
+                # Generate batch
+                batch_candidates = self.step_generator.generate_candidates(
+                    trajectory, 
+                    verbose=False  # Avoid too much logging
+                )
+                
+                if batch_candidates:
+                    all_candidates.extend(batch_candidates)
+                    
+                # Clear GPU cache after each batch
+                torch.cuda.empty_cache()
+                
+        finally:
+            # Always restore original setting
+            self.step_generator.candidates_per_step = original_candidates
+        
+        return all_candidates
+    
     def _generate_final_answer(self, trajectory: str) -> str:
         """Generate and select best final answer"""
         
@@ -169,18 +218,44 @@ class DirectOnlineBestOfNPRM:
         input_ids = inputs['input_ids'].to(self.device)
         attention_mask = inputs['attention_mask'].to(self.device)
         
-        with torch.no_grad():
-            # Use the underlying model directly to avoid WhiteboxModel wrapper issues
-            outputs = self.model.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=500,
-                do_sample=True,
-                temperature=self.temperature,
-                num_return_sequences=self.candidates_per_step,
-                pad_token_id=self.model.tokenizer.eos_token_id,
-                eos_token_id=self.model.tokenizer.eos_token_id
-            )
+        # Generate answer candidates in batches if needed
+        if self.generation_batch_size < self.candidates_per_step:
+            outputs = []
+            num_batches = (self.candidates_per_step + self.generation_batch_size - 1) // self.generation_batch_size
+            
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * self.generation_batch_size
+                end_idx = min((batch_idx + 1) * self.generation_batch_size, self.candidates_per_step)
+                batch_size = end_idx - start_idx
+                
+                with torch.no_grad():
+                    batch_outputs = self.model.model.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        max_new_tokens=1024,
+                        do_sample=True,
+                        temperature=self.temperature,
+                        num_return_sequences=batch_size,
+                        pad_token_id=self.model.tokenizer.eos_token_id,
+                        eos_token_id=self.model.tokenizer.eos_token_id
+                    )
+                    outputs.extend(batch_outputs)
+                    
+                # Clear GPU cache after each batch
+                torch.cuda.empty_cache()
+        else:
+            with torch.no_grad():
+                # Use the underlying model directly to avoid WhiteboxModel wrapper issues
+                outputs = self.model.model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=1024,
+                    do_sample=True,
+                    temperature=self.temperature,
+                    num_return_sequences=self.candidates_per_step,
+                    pad_token_id=self.model.tokenizer.eos_token_id,
+                    eos_token_id=self.model.tokenizer.eos_token_id
+                )
         
         # Extract answer candidates
         answer_candidates = []

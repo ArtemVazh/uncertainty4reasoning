@@ -66,7 +66,7 @@ def get_parser():
                         help="Generation temperature")
     parser.add_argument("--max-new-tokens", type=int, default=250,
                         help="Max tokens per step")
-    parser.add_argument("--max-steps", type=int, default=20,
+    parser.add_argument("--max-steps", type=int, default=30,
                         help="Maximum number of reasoning steps")
     
     # Output arguments
@@ -76,10 +76,18 @@ def get_parser():
                         help="Path to prompt template file (optional)")
     
     # System arguments
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Device to use")
+    parser.add_argument("--device", type=str, default="cuda:0",
+                        help="Device to use for base model (default: cuda:0)")
+    parser.add_argument("--reasoneval-device", type=str, default="cuda:1",
+                        help="Device to use for ReasonEval model (default: cuda:1)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
+    
+    # Memory optimization arguments
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Batch size for candidate generation (default: same as --n)")
+    parser.add_argument("--sequential-generation", action="store_true",
+                        help="Generate candidates one by one to save memory")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     parser.add_argument("--hf-cache", type=str, default=None,
@@ -430,6 +438,16 @@ def main(args):
     log.info(f"  - Max steps: {args.max_steps}")
     
     # Create generator
+    log.info(f"Using device {args.device} for base model, {args.reasoneval_device} for ReasonEval")
+    
+    # Determine batch size for generation
+    batch_size = args.batch_size if args.batch_size else args.n
+    if args.sequential_generation:
+        batch_size = 1
+        log.info("Using sequential generation (batch_size=1) to save memory")
+    elif batch_size < args.n:
+        log.info(f"Using batch generation with batch_size={batch_size}")
+    
     generator = DirectOnlineBestOfNReasonEvalSeparate(
         model=model,
         reasoneval_model_path=args.reasoneval_path,
@@ -437,7 +455,9 @@ def main(args):
         max_steps=args.max_steps,
         temperature=args.temperature,
         device=args.device,
-        verbose=args.verbose
+        reasoneval_device=args.reasoneval_device,
+        verbose=args.verbose,
+        generation_batch_size=batch_size
     )
     
     # Process dataset

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run direct online best-of-n evaluation with UHead
+Run direct online best-of-n evaluation with PRM
 """
 
 import argparse
@@ -13,14 +13,13 @@ from tqdm import tqdm
 from datasets import load_dataset
 from lm_polygraph import WhiteboxModel
 import traceback
-from online_bestofn.direct_online_bestofn import run_direct_online_bestofn
+from online_bestofn.direct_online_bestofn_prm import DirectOnlineBestOfNPRM
 from online_bestofn.direct_online_bestofn import _is_correct_answer
-from online_bestofn.direct_online_bestofn import DirectOnlineBestOfN
 from utils import parse_ans
 from online_bestofn.deepseek_annotation import Annotator
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("direct_online_bon")
+log = logging.getLogger("direct_online_bon_prm")
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -39,7 +38,7 @@ def load_model(model_path: str, device_map: str):
 
 def get_parser():
     """Command line arguments"""
-    parser = argparse.ArgumentParser(description="Direct online best-of-n with UHead")
+    parser = argparse.ArgumentParser(description="Direct online best-of-n with PRM")
     
     # Dataset arguments
     parser.add_argument("--dataset-path", type=str, required=True,
@@ -52,8 +51,8 @@ def get_parser():
     # Model arguments
     parser.add_argument("--model-path", type=str, default="Qwen/Qwen3-1.7B",
                         help="Base model for generation")
-    parser.add_argument("--uhead-path", type=str, required=True,
-                        help="Path to UHead model")
+    parser.add_argument("--prm-path", type=str, default="Qwen/Qwen2.5-Math-7B-PRM800K",
+                        help="Path to PRM model")
     
     # Generation arguments
     parser.add_argument("--n", type=int, default=10,
@@ -65,12 +64,6 @@ def get_parser():
     parser.add_argument("--max-steps", type=int, default=20,
                         help="Maximum number of reasoning steps")
     
-    # Memory optimization arguments
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help="Batch size for candidate generation (default: same as --n)")
-    parser.add_argument("--sequential-generation", action="store_true",
-                        help="Generate candidates one by one to save memory")
-    
     # Output arguments
     parser.add_argument("--save-dir", type=str, required=True,
                         help="Directory to save results (will create subdirectories)")
@@ -78,8 +71,10 @@ def get_parser():
                         help="Path to prompt template file (optional)")
     
     # System arguments
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Device to use")
+    parser.add_argument("--device", type=str, default="cuda:0",
+                        help="Device to use for base model (default: cuda:0)")
+    parser.add_argument("--prm-device", type=str, default="cuda:1",
+                        help="Device to use for PRM model (default: cuda:1)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
     parser.add_argument("--verbose", action="store_true",
@@ -108,7 +103,7 @@ def load_prompt_template(prompt_file: str) -> str:
         with open(prompt_file, 'r') as f:
             return f.read().strip()
     else:
-        # Default prompt template
+        # Default prompt template for PRM
         return "Question: {question}\n\nLet's solve this step by step.\n\n"
 
 
@@ -128,7 +123,7 @@ def prepare_dataset_with_prompts(dataset, prompt_template: str):
 
 def main(args):
     """Main evaluation function"""
-    # import pdb; pdb.set_trace()
+    
     # Set random seeds
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -138,12 +133,12 @@ def main(args):
         torch.cuda.manual_seed_all(args.seed)
     log.info(f"Set random seed to {args.seed}")
     
-    # Extract dataset name and uhead name for directory structure
+    # Extract dataset name and PRM name for directory structure
     dataset_name = args.dataset_path.split('/')[-1] if '/' in args.dataset_path else args.dataset_path
-    uhead_name = args.uhead_path.split('/')[-1] if '/' in args.uhead_path else args.uhead_path
+    prm_name = args.prm_path.split('/')[-1] if '/' in args.prm_path else args.prm_path
     
     # Create save path with directory structure
-    save_path = os.path.join(args.save_dir, dataset_name, f"{uhead_name}.pt")
+    save_path = os.path.join(args.save_dir, dataset_name, f"{prm_name}.pt")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
     log.info(f"Results will be saved to: {save_path}")
@@ -169,8 +164,9 @@ def main(args):
     base_model.eval()
     model = WhiteboxModel(base_model, tokenizer)
     
-    # Run direct online best-of-n
-    log.info(f"Starting direct online best-of-n evaluation")
+    # Run direct online best-of-n with PRM
+    log.info(f"Starting direct online best-of-n evaluation with PRM")
+    log.info(f"  - PRM model: {args.prm_path}")
     log.info(f"  - Candidates per step: {args.n}")
     log.info(f"  - Temperature: {args.temperature}")
     log.info(f"  - Max tokens per step: {args.max_new_tokens}")
@@ -215,24 +211,18 @@ def main(args):
             results = []
             processed_indices = set()
     
-    # Create generator with custom parameters
-    # Determine batch size for generation
-    batch_size = args.batch_size if args.batch_size else args.n
-    if args.sequential_generation:
-        batch_size = 1
-        log.info("Using sequential generation (batch_size=1) to save memory")
-    elif batch_size < args.n:
-        log.info(f"Using batch generation with batch_size={batch_size}")
+    # Create generator with PRM
+    log.info(f"Using device {args.device} for base model, {args.prm_device} for PRM")
     
-    generator = DirectOnlineBestOfN(
+    generator = DirectOnlineBestOfNPRM(
         model=model,
-        uhead_path=args.uhead_path,
+        prm_model_path=args.prm_path,
         candidates_per_step=args.n,
         max_steps=args.max_steps,
         temperature=args.temperature,
         device=args.device,
-        verbose=args.verbose,
-        generation_batch_size=batch_size
+        prm_device=args.prm_device,
+        verbose=args.verbose
     )
     
     # Process dataset
@@ -274,7 +264,7 @@ def main(args):
                 "generated_trajectory": result["trajectory"],
                 "generated_answer": generated_text,
                 "steps": result["steps"],
-                "step_scores": result["step_scores"],
+                "step_scores": result["step_scores"],  # These are rewards (higher=better)
                 "completed": result["completed"]
             })
             
@@ -282,7 +272,7 @@ def main(args):
                 log.info(f"Generated: {generated_text}")
                 log.info(f"Num steps: {len(result['steps'])}")
                 if result['step_scores']:
-                    log.info(f"Avg step score: {np.mean(result['step_scores']):.3f}")
+                    log.info(f"Avg step reward: {np.mean(result['step_scores']):.3f}")
             
         except Exception as e:
             log.error(f"Error processing sample {i}: {e}")
@@ -324,18 +314,17 @@ def main(args):
                 is_correct = _is_correct_answer(result["generated_answer"], result["gold_answer"])
                 result["is_correct_exact_match"] = is_correct
                 
-                # if args.verbose and i % 10 == 0:  # Log every 10th for less clutter
-                #     log.info(f"\nSample {result['index']}:")
-                #     log.info(f"Generated answer: {parse_ans(result['generated_answer'])}")
-                #     log.info(f"Gold answer: {parse_ans(result['gold_answer'])}")
-                #     log.info(f"Correct: {is_correct}")
+                if args.verbose and i % 10 == 0:  # Log every 10th for less clutter
+                    log.info(f"\nSample {result['index']}:")
+                    log.info(f"Generated answer: {parse_ans(result['generated_answer'])}")
+                    log.info(f"Gold answer: {parse_ans(result['gold_answer'])}")
+                    log.info(f"Correct: {is_correct}")
             except Exception as e:
                 log.error(f"Error checking correctness for sample {result['index']}: {e}")
                 result["is_correct_exact_match"] = False
                 
     elif args.correctness_mode == "deepseek":
         # Use DeepSeek verification
-        # import pdb; pdb.set_trace()
         log.info(f"Using DeepSeek verification with {args.n_threads} threads")
         
         # Load prompt template and ensure compatibility
@@ -415,20 +404,20 @@ def main(args):
     if completed > 0:
         log.info(f"  - Accuracy (of completed): {correct/completed:.1%}")
     
-    # Average statistics
-    all_scores = []
+    # Average statistics for rewards
+    all_rewards = []
     all_steps = []
     for r in results:
         if "step_scores" in r and r["step_scores"]:
-            all_scores.extend(r["step_scores"])
+            all_rewards.extend(r["step_scores"])
             all_steps.append(len(r["steps"]))
     
-    if all_scores:
+    if all_rewards:
         log.info(f"\nStep Statistics:")
         log.info(f"  - Avg steps per trajectory: {np.mean(all_steps):.1f}")
-        log.info(f"  - Avg step uncertainty: {np.mean(all_scores):.3f}")
-        log.info(f"  - Min step uncertainty: {np.min(all_scores):.3f}")
-        log.info(f"  - Max step uncertainty: {np.max(all_scores):.3f}")
+        log.info(f"  - Avg step reward: {np.mean(all_rewards):.3f}")
+        log.info(f"  - Min step reward: {np.min(all_rewards):.3f}")
+        log.info(f"  - Max step reward: {np.max(all_rewards):.3f}")
 
 
 if __name__ == "__main__":

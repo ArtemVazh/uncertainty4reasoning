@@ -7,6 +7,7 @@ import argparse
 import os
 import logging
 import random
+import gc
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -32,7 +33,12 @@ def load_tokenizer(model_path: str):
 
 
 def load_model(model_path: str, device_map: str):
-    model = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, 
+        device_map=device_map, 
+        trust_remote_code=True
+        # torch_dtype=torch.float16  # Use fp16 by default to save memory
+    )
     return model
 
 
@@ -61,8 +67,14 @@ def get_parser():
                         help="Generation temperature")
     parser.add_argument("--max-new-tokens", type=int, default=250,
                         help="Max tokens per step")
-    parser.add_argument("--max-steps", type=int, default=20,
+    parser.add_argument("--max-steps", type=int, default=30,
                         help="Maximum number of reasoning steps")
+    
+    # Memory optimization arguments
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Batch size for candidate generation (default: same as --n)")
+    parser.add_argument("--sequential-generation", action="store_true",
+                        help="Generate candidates one by one to save memory")
     
     # Output arguments
     parser.add_argument("--save-dir", type=str, required=True,
@@ -71,8 +83,10 @@ def get_parser():
                         help="Path to prompt template file (optional)")
     
     # System arguments
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Device to use")
+    parser.add_argument("--device", type=str, default="cuda:0",
+                        help="Device to use for base model (default: cuda:0)")
+    parser.add_argument("--prm-device", type=str, default="cuda:1",
+                        help="Device to use for PRM model (default: cuda:1)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
     parser.add_argument("--verbose", action="store_true",
@@ -210,6 +224,16 @@ def main(args):
             processed_indices = set()
     
     # Create generator with PRM
+    log.info(f"Using device {args.device} for base model, {args.prm_device} for PRM")
+    
+    # Determine batch size for generation
+    batch_size = args.batch_size if args.batch_size else args.n
+    if args.sequential_generation:
+        batch_size = 1
+        log.info("Using sequential generation (batch_size=1) to save memory")
+    elif batch_size < args.n:
+        log.info(f"Using batch generation with batch_size={batch_size}")
+    
     generator = DirectOnlineBestOfNPRM(
         model=model,
         prm_model_path=args.prm_path,
@@ -217,7 +241,9 @@ def main(args):
         max_steps=args.max_steps,
         temperature=args.temperature,
         device=args.device,
-        verbose=args.verbose
+        prm_device=args.prm_device,
+        verbose=args.verbose,
+        generation_batch_size=batch_size
     )
     
     # Process dataset
@@ -285,6 +311,10 @@ def main(args):
         if len(results) % 10 == 0:
             torch.save(results, save_path)
             log.info(f"Saved {len(results)} results to {save_path}")
+            
+            # Clean up memory periodically
+            torch.cuda.empty_cache()
+            gc.collect()
     
     # Final save after generation
     torch.save(results, save_path)
