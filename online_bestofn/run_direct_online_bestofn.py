@@ -80,8 +80,10 @@ def get_parser():
                         help="Enable verbose logging")
     parser.add_argument("--hf-cache", type=str, default=None,
                         help="HuggingFace cache directory")
-    parser.add_argument("--resume", action="store_true", default=False,
-                        help="Resume from existing save file")
+    parser.add_argument("--resume", action="store_true", default=True,
+                        help="Resume from existing save file (default: True)")
+    parser.add_argument("--no-resume", dest="resume", action="store_false",
+                        help="Do not resume from existing save file")
     parser.add_argument("--correctness-mode", type=str, default="exact_match",
                         choices=["exact_match", "deepseek"],
                         help="Method for checking answer correctness (default: exact_match)")
