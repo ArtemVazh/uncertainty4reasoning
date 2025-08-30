@@ -130,7 +130,6 @@ class DirectReasonEvalScorer(UncertaintyBasedScorer):
             "Reasoning Steps:",
             "Solution:",
             "Answer:",
-            "\\n\\n",
             "- Step"
         ]
         

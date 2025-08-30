@@ -85,8 +85,8 @@ class DirectOnlineBestOfNReasonEvalSeparate:
                 - completed: Whether trajectory reached completion
         """
         
-        if criterion not in ["validity", "redundancy"]:
-            raise ValueError(f"Invalid criterion: {criterion}. Must be 'validity' or 'redundancy'")
+        if criterion not in ["validity", "redundancy", "both"]:
+            raise ValueError(f"Invalid criterion: {criterion}. Must be 'validity', 'redundancy', or 'both'")
         
         trajectory = prompt
         selected_steps = []
@@ -155,10 +155,16 @@ class DirectOnlineBestOfNReasonEvalSeparate:
                 # Higher validity is better
                 best_idx = max(range(len(candidate_validity_scores)), 
                               key=lambda i: candidate_validity_scores[i])
-            else:  # redundancy
+            elif criterion == "redundancy":
                 # Lower redundancy is better
                 best_idx = min(range(len(candidate_redundancy_scores)), 
                               key=lambda i: candidate_redundancy_scores[i])
+            else:  # both
+                # Combine scores: higher validity + lower redundancy is better
+                # Score = validity - redundancy (higher is better)
+                combined_scores = [v - r for v, r in zip(candidate_validity_scores, candidate_redundancy_scores)]
+                best_idx = max(range(len(combined_scores)), 
+                              key=lambda i: combined_scores[i])
             
             selected_candidate = candidates[best_idx]
             selected_validity = candidate_validity_scores[best_idx]
@@ -167,6 +173,8 @@ class DirectOnlineBestOfNReasonEvalSeparate:
             if self.verbose:
                 log.info(f"Selected candidate {best_idx} based on {criterion}")
                 log.info(f"Validity: {selected_validity:.3f}, Redundancy: {selected_redundancy:.3f}")
+                if criterion == "both":
+                    log.info(f"Combined score: {selected_validity - selected_redundancy:.3f}")
                 log.info(f"Text: {selected_candidate.text}")
             
             # Update trajectory
@@ -254,9 +262,13 @@ class DirectOnlineBestOfNReasonEvalSeparate:
         if criterion == "validity":
             best_idx = max(range(len(answer_validity_scores)), 
                           key=lambda i: answer_validity_scores[i])
-        else:
+        elif criterion == "redundancy":
             best_idx = min(range(len(answer_redundancy_scores)), 
                           key=lambda i: answer_redundancy_scores[i])
+        else:  # both
+            combined_scores = [v - r for v, r in zip(answer_validity_scores, answer_redundancy_scores)]
+            best_idx = max(range(len(combined_scores)), 
+                          key=lambda i: combined_scores[i])
         
         if self.verbose:
             log.info(f"Generated {len(answer_candidates)} answer candidates")

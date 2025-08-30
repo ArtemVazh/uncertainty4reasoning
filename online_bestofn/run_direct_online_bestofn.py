@@ -17,6 +17,7 @@ from online_bestofn.direct_online_bestofn import run_direct_online_bestofn
 from online_bestofn.direct_online_bestofn import _is_correct_answer
 from online_bestofn.direct_online_bestofn import DirectOnlineBestOfN
 from utils import parse_ans
+from online_bestofn.deepseek_annotation import Annotator
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("direct_online_bon")
@@ -65,8 +66,8 @@ def get_parser():
                         help="Maximum number of reasoning steps")
     
     # Output arguments
-    parser.add_argument("--save-path", type=str, required=True,
-                        help="Path to save results")
+    parser.add_argument("--save-dir", type=str, required=True,
+                        help="Directory to save results (will create subdirectories)")
     parser.add_argument("--prompt-file", type=str, default=None,
                         help="Path to prompt template file (optional)")
     
@@ -79,6 +80,16 @@ def get_parser():
                         help="Enable verbose logging")
     parser.add_argument("--hf-cache", type=str, default=None,
                         help="HuggingFace cache directory")
+    parser.add_argument("--resume", action="store_true", default=False,
+                        help="Resume from existing save file")
+    parser.add_argument("--correctness-mode", type=str, default="exact_match",
+                        choices=["exact_match", "deepseek"],
+                        help="Method for checking answer correctness (default: exact_match)")
+    parser.add_argument("--n-threads", type=int, default=1,
+                        help="Number of threads for DeepSeek verification (default: 1)")
+    parser.add_argument("--annotation-prompt-type", type=str, default="non_unique",
+                        choices=["unique", "non_unique"],
+                        help="Type of annotation prompt for DeepSeek (default: non_unique)")
     
     return parser
 
@@ -109,7 +120,7 @@ def prepare_dataset_with_prompts(dataset, prompt_template: str):
 
 def main(args):
     """Main evaluation function"""
-    
+    # import pdb; pdb.set_trace()
     # Set random seeds
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -119,8 +130,15 @@ def main(args):
         torch.cuda.manual_seed_all(args.seed)
     log.info(f"Set random seed to {args.seed}")
     
-    # Create output directory
-    os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
+    # Extract dataset name and uhead name for directory structure
+    dataset_name = args.dataset_path.split('/')[-1] if '/' in args.dataset_path else args.dataset_path
+    uhead_name = args.uhead_path.split('/')[-1] if '/' in args.uhead_path else args.uhead_path
+    
+    # Create save path with directory structure
+    save_path = os.path.join(args.save_dir, dataset_name, f"{uhead_name}.pt")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    log.info(f"Results will be saved to: {save_path}")
     
     # Load dataset
     log.info(f"Loading dataset: {args.dataset_path} ({args.dataset_split})")
@@ -131,10 +149,10 @@ def main(args):
     )
     
     # Add prompts if provided
-    if args.prompt_file:
-        prompt_template = load_prompt_template(args.prompt_file)
-        dataset = prepare_dataset_with_prompts(dataset, prompt_template)
-        log.info(f"Added prompts from {args.prompt_file}")
+    # if args.prompt_file:
+    #     prompt_template = load_prompt_template(args.prompt_file)
+    #     dataset = prepare_dataset_with_prompts(dataset, prompt_template)
+    #     log.info(f"Added prompts from {args.prompt_file}")
     
     # Load model
     log.info(f"Loading model: {args.model_path}")
@@ -152,6 +170,43 @@ def main(args):
     
 
     
+    # Load existing results if resuming
+    results = []
+    processed_indices = set()
+    
+    if args.resume and os.path.exists(save_path):
+        log.info(f"Loading existing results from {save_path}")
+        try:
+            results = torch.load(save_path)
+            processed_indices = {r["index"] for r in results}
+            log.info(f"Loaded {len(results)} existing results")
+            log.info(f"Already processed indices: {sorted(processed_indices)}")
+            
+            # Validate all existing results match current dataset
+            log.info("Validating existing results against current dataset...")
+            for result in results:
+                idx = result["index"]
+                if idx < len(dataset):
+                    sample = dataset[idx]
+                    if (result["question"] != sample["question"] or 
+                        result["gold_answer"] != sample["answer"]):
+                        raise ValueError(
+                            f"Sample mismatch at index {idx}!\n"
+                            f"Existing question: {result['question']}...\n"
+                            f"Current question: {sample['question']}...\n"
+                            f"Existing answer: {result['gold_answer']}\n"
+                            f"Current answer: {sample['answer']}\n"
+                            f"The saved results appear to be from a different dataset!"
+                        )
+            log.info("Validation passed - all existing results match current dataset")
+            
+        except Exception as e:
+            if "Sample mismatch" in str(e):
+                raise  # Re-raise validation errors
+            log.warning(f"Failed to load existing results: {e}")
+            results = []
+            processed_indices = set()
+    
     # Create generator with custom parameters
     generator = DirectOnlineBestOfN(
         model=model,
@@ -164,31 +219,37 @@ def main(args):
     )
     
     # Process dataset
-    results = []
     subset_size = min(args.subset, len(dataset)) if args.subset else len(dataset)
     
-    for i in tqdm(range(subset_size), desc="Processing samples"):
+    # Phase 1: Generate trajectories (without checking correctness)
+    log.info(f"\n{'='*60}")
+    log.info("Phase 1: Generating trajectories")
+    log.info(f"{'='*60}")
+    
+    for i in tqdm(range(subset_size), desc="Generating trajectories"):
+        # Skip if already processed
+        if i in processed_indices:
+            if args.verbose:
+                log.info(f"Skipping sample {i} (already processed)")
+            continue
+            
         sample = dataset[i]
         
         if args.verbose:
             log.info(f"\n{'='*60}")
             log.info(f"Sample {i+1}/{subset_size}")
             log.info(f"Question: {sample['question'][:200]}...")
-            log.info(f"Gold Answer: {sample['answer']}")
         
         try:
             # Generate trajectory
             result = generator.generate_trajectory(sample["question"])
             
-            # Extract generated answer
+            # Extract generated answer (but don't check correctness yet)
             generated_text = result["trajectory"]
             if sample["question"] in generated_text:
                 generated_text = generated_text.replace(sample["question"], "").strip()
             
-            # Check correctness
-            is_correct = _is_correct_answer(generated_text, sample["answer"])
-            
-            # Store result
+            # Store result WITHOUT correctness check
             results.append({
                 "index": i,
                 "question": sample["question"],
@@ -197,22 +258,17 @@ def main(args):
                 "generated_answer": generated_text,
                 "steps": result["steps"],
                 "step_scores": result["step_scores"],
-                "is_correct": is_correct,
                 "completed": result["completed"]
             })
             
             if args.verbose:
                 log.info(f"Generated: {generated_text}")
-                log.info(f"Generated answer: {parse_ans(generated_text)}")
-                log.info(f"Gold answer: {parse_ans(sample['answer'])}")
-                log.info(f"Correct: {is_correct}")
                 log.info(f"Num steps: {len(result['steps'])}")
                 if result['step_scores']:
                     log.info(f"Avg step score: {np.mean(result['step_scores']):.3f}")
             
         except Exception as e:
             log.error(f"Error processing sample {i}: {e}")
-
             traceback.print_exc()
             
             results.append({
@@ -220,32 +276,123 @@ def main(args):
                 "question": sample["question"],
                 "gold_answer": sample["answer"],
                 "error": str(e),
-                "is_correct": False,
                 "completed": False
             })
         
         # Save periodically
-        if (i + 1) % 10 == 0:
-            torch.save(results, args.save_path)
-            log.info(f"Saved {len(results)} results to {args.save_path}")
+        if len(results) % 10 == 0:
+            torch.save(results, save_path)
+            log.info(f"Saved {len(results)} results to {save_path}")
     
-    # Final save
-    torch.save(results, args.save_path)
-    log.info(f"Final save: {len(results)} results to {args.save_path}")
+    # Final save after generation
+    torch.save(results, save_path)
+    log.info(f"Final save after generation: {len(results)} results to {save_path}")
     
     # Cleanup
     generator.cleanup()
     
+    # Phase 2: Check correctness for all results
+    log.info(f"\n{'='*60}")
+    log.info("Phase 2: Checking correctness")
+    log.info(f"{'='*60}")
+    
+    if args.correctness_mode == "exact_match":
+        # Use exact match checking
+        for i, result in enumerate(tqdm(results, desc="Checking correctness (exact match)")):
+            # Skip if this result has an error or already has correctness checked
+            if "error" in result or "is_correct_exact_match" in result:
+                continue
+                
+            try:
+                is_correct = _is_correct_answer(result["generated_answer"], result["gold_answer"])
+                result["is_correct_exact_match"] = is_correct
+                
+                # if args.verbose and i % 10 == 0:  # Log every 10th for less clutter
+                #     log.info(f"\nSample {result['index']}:")
+                #     log.info(f"Generated answer: {parse_ans(result['generated_answer'])}")
+                #     log.info(f"Gold answer: {parse_ans(result['gold_answer'])}")
+                #     log.info(f"Correct: {is_correct}")
+            except Exception as e:
+                log.error(f"Error checking correctness for sample {result['index']}: {e}")
+                result["is_correct_exact_match"] = False
+                
+    elif args.correctness_mode == "deepseek":
+        # Use DeepSeek verification
+        # import pdb; pdb.set_trace()
+        log.info(f"Using DeepSeek verification with {args.n_threads} threads")
+        
+        # Load prompt template and ensure compatibility
+        prompt_template = load_prompt_template(args.prompt_file) if args.prompt_file else "{q}"
+        if "{question}" in prompt_template:
+            prompt_template = prompt_template.replace("{question}", "{q}")
+        
+        # print(f'Using prompt template:\n{prompt_template}')
+        # import pdb; pdb.set_trace()
+        # Create annotator
+        annotator = Annotator(
+            prompt=prompt_template,
+            n_threads=args.n_threads,
+            cache_path="~/.cache",
+            annotation_prompt_type=args.annotation_prompt_type
+        )
+        
+        # Prepare data for batch processing
+        problems = []
+        solutions = []
+        gold_answers = []
+        result_indices = []
+        
+        # always process all results, since we have deepseek cache.
+        for i, result in enumerate(results):
+            if "error" not in result:
+                problems.append(result["question"])
+                solutions.append(result["generated_answer"])
+                gold_answers.append(result["gold_answer"])
+                result_indices.append(i)
+        # import pdb; pdb.set_trace()
+        if problems:
+            log.info(f"Verifying {len(problems)} solutions with DeepSeek ({args.annotation_prompt_type} prompt)...")
+            
+            # Get annotations from DeepSeek
+            try:
+                annotations = annotator(problems, solutions, gold_answers)
+                
+                # Update results with correctness
+                for idx, annotation in zip(result_indices, annotations):
+                    if np.isnan(annotation):
+                        log.warning(f"DeepSeek returned unclear result for sample {results[idx]['index']}, marking as incorrect")
+                        results[idx]["is_correct_deepseek"] = False
+                    else:
+                        results[idx]["is_correct_deepseek"] = (annotation == 0)  # 0 = correct, 1 = incorrect
+                    
+                    if args.verbose and (idx - result_indices[0]) % 10 == 0:
+                        log.info(f"\nSample {results[idx]['index']}:")
+                        log.info(f"DeepSeek annotation: {annotation}")
+                        log.info(f"Correct: {results[idx]['is_correct_deepseek']}")
+                        
+            except Exception as e:
+                log.error(f"Error during DeepSeek verification: {e}")
+                # Fall back to marking all as incorrect
+                for idx in result_indices:
+                    results[idx]["is_correct_deepseek"] = False
+    
+    # Final save with correctness results
+    torch.save(results, save_path)
+    log.info(f"Final save with correctness: {len(results)} results to {save_path}")
+    
     # Print summary statistics
-    correct = sum(r.get("is_correct", False) for r in results)
+    # Use the appropriate correctness key based on the mode
+    correctness_key = f"is_correct_{args.correctness_mode}"
+    correct = sum(r.get(correctness_key, False) for r in results)
     completed = sum(r.get("completed", False) for r in results)
     errors = sum("error" in r for r in results)
     
     log.info(f"\n{'='*60}")
     log.info(f"Evaluation Summary:")
+    log.info(f"  - Correctness mode: {args.correctness_mode}")
     log.info(f"  - Total samples: {len(results)}")
     log.info(f"  - Completed: {completed} ({completed/len(results):.1%})")
-    log.info(f"  - Correct: {correct} ({correct/len(results):.1%})")
+    log.info(f"  - Correct ({args.correctness_mode}): {correct} ({correct/len(results):.1%})")
     log.info(f"  - Errors: {errors}")
     
     if completed > 0:

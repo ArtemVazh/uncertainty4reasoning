@@ -19,6 +19,7 @@ from online_bestofn.direct_online_bestofn_reasoneval_separate import (
 )
 from online_bestofn.direct_online_bestofn import _is_correct_answer
 from utils import parse_ans
+from online_bestofn.deepseek_annotation import Annotator
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("direct_online_bon_reasoneval_separate")
@@ -83,11 +84,21 @@ def get_parser():
                         help="Enable verbose logging")
     parser.add_argument("--hf-cache", type=str, default=None,
                         help="HuggingFace cache directory")
+    parser.add_argument("--resume", action="store_true", default=False,
+                        help="Resume from existing save file")
+    parser.add_argument("--correctness-mode", type=str, default="exact_match",
+                        choices=["exact_match", "deepseek"],
+                        help="Method for checking answer correctness (default: exact_match)")
+    parser.add_argument("--n-threads", type=int, default=1,
+                        help="Number of threads for DeepSeek verification (default: 1)")
+    parser.add_argument("--annotation-prompt-type", type=str, default="non_unique",
+                        choices=["unique", "non_unique"],
+                        help="Type of annotation prompt for DeepSeek (default: non_unique)")
     
     # Run mode
     parser.add_argument("--criterion", type=str, default="both",
-                        choices=["validity", "redundancy", "both"],
-                        help="Which criterion to evaluate (default: both)")
+                        choices=["validity", "redundancy", "both", "run_all"],
+                        help="Which criterion to evaluate (default: both). 'run_all' runs all three criteria")
     
     return parser
 
@@ -122,7 +133,12 @@ def run_single_criterion(
     criterion: str,
     save_path: str,
     subset_size: int,
-    verbose: bool
+    verbose: bool,
+    resume: bool = False,
+    correctness_mode: str = "exact_match",
+    n_threads: int = 1,
+    annotation_prompt_type: str = "non_unique",
+    prompt_file: str = None
 ):
     """Run evaluation for a single criterion"""
     
@@ -130,30 +146,72 @@ def run_single_criterion(
     log.info(f"Running evaluation with {criterion} criterion")
     log.info(f"{'='*60}")
     
+    # Load existing results if resuming
     results = []
+    processed_indices = set()
     
-    for i in tqdm(range(subset_size), desc=f"Processing samples ({criterion})"):
+    if resume and os.path.exists(save_path):
+        log.info(f"Loading existing results from {save_path}")
+        try:
+            results = torch.load(save_path)
+            processed_indices = {r["index"] for r in results}
+            log.info(f"Loaded {len(results)} existing results")
+            log.info(f"Already processed indices: {sorted(processed_indices)}")
+            
+            # Validate all existing results match current dataset
+            log.info("Validating existing results against current dataset...")
+            for result in results:
+                idx = result["index"]
+                if idx < len(dataset):
+                    sample = dataset[idx]
+                    if (result["question"] != sample["question"] or 
+                        result["gold_answer"] != sample["answer"]):
+                        raise ValueError(
+                            f"Sample mismatch at index {idx}!\n"
+                            f"Existing question: {result['question']}...\n"
+                            f"Current question: {sample['question']}...\n"
+                            f"Existing answer: {result['gold_answer']}\n"
+                            f"Current answer: {sample['answer']}\n"
+                            f"The saved results appear to be from a different dataset!"
+                        )
+            log.info("Validation passed - all existing results match current dataset")
+            
+        except Exception as e:
+            if "Sample mismatch" in str(e):
+                raise  # Re-raise validation errors
+            log.warning(f"Failed to load existing results: {e}")
+            results = []
+            processed_indices = set()
+    
+    # Phase 1: Generate trajectories (without checking correctness)
+    log.info(f"\n{'='*60}")
+    log.info(f"Phase 1: Generating trajectories ({criterion})")
+    log.info(f"{'='*60}")
+    
+    for i in tqdm(range(subset_size), desc=f"Generating trajectories ({criterion})"):
+        # Skip if already processed
+        if i in processed_indices:
+            if verbose:
+                log.info(f"Skipping sample {i} (already processed)")
+            continue
+            
         sample = dataset[i]
         
         if verbose:
             log.info(f"\n{'='*60}")
             log.info(f"Sample {i+1}/{subset_size}")
             log.info(f"Question: {sample['question'][:200]}...")
-            log.info(f"Gold Answer: {sample['answer']}")
         
         try:
             # Generate trajectory
             result = generator.generate_trajectory(sample["question"], criterion=criterion)
             
-            # Extract generated answer
+            # Extract generated answer (but don't check correctness yet)
             generated_text = result["trajectory"]
             if sample["question"] in generated_text:
                 generated_text = generated_text.replace(sample["question"], "").strip()
             
-            # Check correctness
-            is_correct = _is_correct_answer(generated_text, sample["answer"])
-            
-            # Store result
+            # Store result WITHOUT correctness check
             results.append({
                 "index": i,
                 "question": sample["question"],
@@ -164,15 +222,11 @@ def run_single_criterion(
                 "validity_scores": result["validity_scores"],
                 "redundancy_scores": result["redundancy_scores"],
                 "criterion_used": result["criterion_used"],
-                "is_correct": is_correct,
                 "completed": result["completed"]
             })
             
             if verbose:
                 log.info(f"Generated: {generated_text}")
-                log.info(f"Generated answer: {parse_ans(generated_text)}")
-                log.info(f"Gold answer: {parse_ans(sample['answer'])}")
-                log.info(f"Correct: {is_correct}")
                 log.info(f"Num steps: {len(result['steps'])}")
                 if result['validity_scores']:
                     log.info(f"Avg validity: {np.mean(result['validity_scores']):.3f}")
@@ -189,28 +243,118 @@ def run_single_criterion(
                 "gold_answer": sample["answer"],
                 "error": str(e),
                 "criterion_used": criterion,
-                "is_correct": False,
                 "completed": False
             })
         
         # Save periodically
-        if (i + 1) % 10 == 0:
+        if len(results) % 10 == 0:
             torch.save(results, save_path)
             log.info(f"Saved {len(results)} results to {save_path}")
     
-    # Final save
+    # Final save after generation
     torch.save(results, save_path)
-    log.info(f"Final save: {len(results)} results to {save_path}")
+    log.info(f"Final save after generation: {len(results)} results to {save_path}")
+    
+    # Phase 2: Check correctness for all results
+    log.info(f"\n{'='*60}")
+    log.info(f"Phase 2: Checking correctness ({criterion})")
+    log.info(f"{'='*60}")
+    
+    if correctness_mode == "exact_match":
+        # Use exact match checking
+        for i, result in enumerate(tqdm(results, desc=f"Checking correctness (exact match, {criterion})")):
+            # Skip if this result has an error or already has correctness checked
+            if "error" in result or "is_correct_exact_match" in result:
+                continue
+                
+            try:
+                is_correct = _is_correct_answer(result["generated_answer"], result["gold_answer"])
+                result["is_correct_exact_match"] = is_correct
+                
+                if verbose and i % 10 == 0:  # Log every 10th for less clutter
+                    log.info(f"\nSample {result['index']}:")
+                    log.info(f"Generated answer: {parse_ans(result['generated_answer'])}")
+                    log.info(f"Gold answer: {parse_ans(result['gold_answer'])}")
+                    log.info(f"Correct: {is_correct}")
+            except Exception as e:
+                log.error(f"Error checking correctness for sample {result['index']}: {e}")
+                result["is_correct_exact_match"] = False
+                
+    elif correctness_mode == "deepseek":
+        # Use DeepSeek verification
+        log.info(f"Using DeepSeek verification with {n_threads} threads")
+        
+        # Load prompt template and ensure compatibility
+        prompt_template = load_prompt_template(prompt_file) if prompt_file else "{q}"
+        if "{question}" in prompt_template:
+            prompt_template = prompt_template.replace("{question}", "{q}")
+        
+        # print(f'Using prompt template:\n{prompt_template}')
+        # import pdb; pdb.set_trace()
+        # Create annotator
+        annotator = Annotator(
+            prompt=prompt_template,
+            n_threads=n_threads,
+            cache_path="~/.cache",
+            annotation_prompt_type=annotation_prompt_type
+        )
+        
+        # Prepare data for batch processing
+        problems = []
+        solutions = []
+        gold_answers = []
+        result_indices = []
+        
+        # always process all results, since we have deepseek cache.
+        for i, result in enumerate(results):
+            if "error" not in result:
+                problems.append(result["question"])
+                solutions.append(result["generated_answer"])
+                gold_answers.append(result["gold_answer"])
+                result_indices.append(i)
+        
+        if problems:
+            log.info(f"Verifying {len(problems)} solutions with DeepSeek ({annotation_prompt_type} prompt)...")
+            
+            # Get annotations from DeepSeek
+            try:
+                annotations = annotator(problems, solutions, gold_answers)
+                
+                # Update results with correctness
+                for idx, annotation in zip(result_indices, annotations):
+                    if np.isnan(annotation):
+                        log.warning(f"DeepSeek returned unclear result for sample {results[idx]['index']}, marking as incorrect")
+                        results[idx]["is_correct_deepseek"] = False
+                    else:
+                        results[idx]["is_correct_deepseek"] = (annotation == 0)  # 0 = correct, 1 = incorrect
+                    
+                    if verbose and (idx - result_indices[0]) % 10 == 0:
+                        log.info(f"\nSample {results[idx]['index']}:")
+                        log.info(f"DeepSeek annotation: {annotation}")
+                        log.info(f"Correct: {results[idx]['is_correct_deepseek']}")
+                        
+            except Exception as e:
+                log.error(f"Error during DeepSeek verification: {e}")
+                # Fall back to marking all as incorrect
+                for idx in result_indices:
+                    results[idx]["is_correct_deepseek"] = False
+    
+    # Final save with correctness results
+    torch.save(results, save_path)
+    log.info(f"Final save with correctness: {len(results)} results to {save_path}")
     
     # Print summary
-    correct = sum(r.get("is_correct", False) for r in results)
+    # Use the appropriate correctness key based on the mode
+    correctness_key = f"is_correct_{correctness_mode}"
+    correct = sum(r.get(correctness_key, False) for r in results)
     completed = sum(r.get("completed", False) for r in results)
     errors = sum("error" in r for r in results)
     
     log.info(f"\n{criterion.capitalize()}-based Evaluation Summary:")
+    log.info(f"  - Correctness mode: {correctness_mode}")
     log.info(f"  - Total samples: {len(results)}")
     log.info(f"  - Completed: {completed} ({completed/len(results):.1%})")
-    log.info(f"  - Correct: {correct} ({correct/len(results):.1%})")
+    log.info(f"  - Correct ({correctness_mode}): {correct} ({correct/len(results):.1%})")
     log.info(f"  - Errors: {errors}")
     
     if completed > 0:
@@ -252,6 +396,7 @@ def main(args):
     os.makedirs(args.save_dir, exist_ok=True)
     save_path_validity = os.path.join(args.save_dir, "results_validity.pt")
     save_path_redundancy = os.path.join(args.save_dir, "results_redundancy.pt")
+    save_path_both = os.path.join(args.save_dir, "results_both.pt")
     
     # Load dataset
     log.info(f"Loading dataset: {args.dataset_path} ({args.dataset_split})")
@@ -262,10 +407,10 @@ def main(args):
     )
     
     # Add prompts if provided
-    if args.prompt_file:
-        prompt_template = load_prompt_template(args.prompt_file)
-        dataset = prepare_dataset_with_prompts(dataset, prompt_template)
-        log.info(f"Added prompts from {args.prompt_file}")
+    # if args.prompt_file:
+    #     prompt_template = load_prompt_template(args.prompt_file)
+    #     dataset = prepare_dataset_with_prompts(dataset, prompt_template)
+    #     log.info(f"Added prompts from {args.prompt_file}")
     
     # Load model
     log.info(f"Loading model: {args.model_path}")
@@ -298,16 +443,71 @@ def main(args):
     
     try:
         # Run evaluations based on criterion
-        if args.criterion == "validity" or args.criterion == "both":
+        if args.criterion == "run_all":
+            # Run all three evaluations
+            log.info("Running all three criteria evaluations...")
+            
+            # 1. Validity
             run_single_criterion(
                 generator, dataset, "validity", 
-                save_path_validity, subset_size, args.verbose
+                save_path_validity, subset_size, args.verbose,
+                resume=args.resume,
+                correctness_mode=args.correctness_mode,
+                n_threads=args.n_threads,
+                annotation_prompt_type=args.annotation_prompt_type,
+                prompt_file=args.prompt_file
             )
-        
-        if args.criterion == "redundancy" or args.criterion == "both":
+            
+            # 2. Redundancy
             run_single_criterion(
                 generator, dataset, "redundancy", 
-                save_path_redundancy, subset_size, args.verbose
+                save_path_redundancy, subset_size, args.verbose,
+                resume=args.resume,
+                correctness_mode=args.correctness_mode,
+                n_threads=args.n_threads,
+                annotation_prompt_type=args.annotation_prompt_type,
+                prompt_file=args.prompt_file
+            )
+            
+            # 3. Both (combined)
+            run_single_criterion(
+                generator, dataset, "both", 
+                save_path_both, subset_size, args.verbose,
+                resume=args.resume,
+                correctness_mode=args.correctness_mode,
+                n_threads=args.n_threads,
+                annotation_prompt_type=args.annotation_prompt_type,
+                prompt_file=args.prompt_file
+            )
+        elif args.criterion == "validity":
+            run_single_criterion(
+                generator, dataset, "validity", 
+                save_path_validity, subset_size, args.verbose,
+                resume=args.resume,
+                correctness_mode=args.correctness_mode,
+                n_threads=args.n_threads,
+                annotation_prompt_type=args.annotation_prompt_type,
+                prompt_file=args.prompt_file
+            )
+        elif args.criterion == "redundancy":
+            run_single_criterion(
+                generator, dataset, "redundancy", 
+                save_path_redundancy, subset_size, args.verbose,
+                resume=args.resume,
+                correctness_mode=args.correctness_mode,
+                n_threads=args.n_threads,
+                annotation_prompt_type=args.annotation_prompt_type,
+                prompt_file=args.prompt_file
+            )
+        else:  # both
+            run_single_criterion(
+                generator, dataset, "both", 
+                save_path_both, subset_size, args.verbose,
+                resume=args.resume,
+                correctness_mode=args.correctness_mode,
+                n_threads=args.n_threads,
+                annotation_prompt_type=args.annotation_prompt_type,
+                prompt_file=args.prompt_file
             )
         
     finally:
