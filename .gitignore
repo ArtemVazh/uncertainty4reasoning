@@ -197,3 +197,6 @@ bash_scripts/
 diversity_sampling/
 test_data/
 CLAUDE.md
+online_bon_results/
+bon_results/
+online_bestofn/old_code
