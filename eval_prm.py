@@ -1,7 +1,7 @@
 import argparse
 from tqdm import tqdm
 
-from baselines.prm import PRMStatCalculator
+from baselines.prm import load_prm_calculator_by_model_path
 from lm_polygraph import UEManager
 from utils import extract_steps, extract_questions
 
@@ -13,8 +13,13 @@ def get_parser():
     parser.add_argument('--base-model-path', type=str, required=True, help="Path or name of the base model")
     parser.add_argument('--hf-save-path', type=str, default=None,
                         help="Path to save manager with rewards, default: same as hf-manager-path")
-    parser.add_argument('--prm-model-path', type=str, default="Qwen/Qwen2.5-Math-7B-PRM800K",
-                        help="Path or name of the PRM model")
+    parser.add_argument('--prm-model-path', type=str, nargs='+', default=[
+        "Qwen/Qwen2.5-Math-7B-PRM800K",
+        "Qwen/Qwen2.5-Math-PRM-7B",
+        "peiyi9979/math-shepherd-mistral-7b-prm",
+        # "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B",
+        # "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B",
+    ], help="Path(s) or name(s) of the PRM model(s)")
     parser.add_argument('--device', type=str, default="auto", help="Device map setting for model loading")
     parser.add_argument('--prompt-file', type=str, default="configs/gsm8k_3shot_prompt.txt",
                         help="Path to prompt template file")
@@ -24,24 +29,33 @@ def get_parser():
 
 
 def main(args):
-    prm = PRMStatCalculator(model_path=args.prm_model_path, device=args.device)
+    print('Evaluating following PRMs:')
+    for prm_model_path in args.prm_model_path:
+        print(f' - {prm_model_path}')
+    for prm_model_path in args.prm_model_path:
+        prm = load_prm_calculator_by_model_path(model_path=prm_model_path, device=args.device)
+        prm.init()
 
-    man = UEManager.load_from_hub(args.hf_manager_path)
-    steps = extract_steps(man, args.base_model_path, args.hf_cache)
-    questions = extract_questions(man, args.prompt_file)
+        man = UEManager.load_from_hub(args.hf_manager_path)
+        steps = extract_steps(man, args.base_model_path, args.hf_cache)
+        questions = extract_questions(man, args.prompt_file)
 
-    rewards: list[float] = []
-    for i in tqdm(range(len(questions)), desc='Evaluating PRM'):
-        r = prm.get_rewards(questions[i], steps[i])
-        assert len(r) == len(steps[i])
-        rewards += r
+        rewards: list[float] = []
+        for i in tqdm(range(len(questions)), desc=f'Evaluating {prm_model_path}'):
+            r = prm.get_rewards(questions[i], steps[i])
+            if len(r) != len(steps[i]):
+                print('Question:', questions[i])
+                print('Steps:', '\n'.join(s.claim_text.strip() for s in steps[i]))
+                print('rewards:', r)
+            assert len(r) == len(steps[i])
+            rewards += r
 
-    if args.hf_save_path is None:
-        args.hf_save_path = args.hf_manager_path
-    # higher values indicate higher uncertainty
-    man.estimations['claim', f'PRM_{args.prm_model_path}'] = [-r for r in rewards]
-    man.push_to_hub(args.hf_save_path)
-    print('Saved to {}'.format(args.hf_save_path))
+        if args.hf_save_path is None:
+            args.hf_save_path = args.hf_manager_path
+        # higher values indicate higher uncertainty
+        man.estimations['claim', f'PRM_{prm_model_path}'] = [-r for r in rewards]
+        man.push_to_hub(args.hf_save_path)
+        print('Saved to {}'.format(args.hf_save_path))
 
 
 if __name__ == '__main__':
