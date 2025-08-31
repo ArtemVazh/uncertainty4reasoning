@@ -57,21 +57,22 @@ class DirectReasonEvalScorer(UncertaintyBasedScorer):
             
             # Load tokenizer
             self.reasoneval_tokenizer = AutoTokenizer.from_pretrained(
-                self.reasoneval_model_path, 
-                device_map=self.device
+                self.reasoneval_model_path
             )
             
             # Load appropriate model based on size
             if self.reasoneval_model_path.endswith('7B'):
                 self.reasoneval_model = ReasonEval_7B.from_pretrained(
                     self.reasoneval_model_path, 
-                    device_map=self.device
+                    device_map=self.device,
+                    trust_remote_code=True
                 ).eval()
                 self.model_size = '7B'
             elif self.reasoneval_model_path.endswith('34B'):
                 self.reasoneval_model = ReasonEval_34B.from_pretrained(
                     self.reasoneval_model_path, 
-                    device_map=self.device
+                    device_map=self.device,
+                    trust_remote_code=True
                 ).eval()
                 self.model_size = '34B'
             else:

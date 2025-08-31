@@ -78,8 +78,8 @@ def get_parser():
     # System arguments
     parser.add_argument("--device", type=str, default="cuda:0",
                         help="Device to use for base model (default: cuda:0)")
-    parser.add_argument("--reasoneval-device", type=str, default="cuda:1",
-                        help="Device to use for ReasonEval model (default: cuda:1)")
+    parser.add_argument("--reasoneval-device", type=str, default="cuda:0",
+                        help="Device to use for ReasonEval model (default: cuda:0)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
     
@@ -402,11 +402,17 @@ def main(args):
         torch.cuda.manual_seed_all(args.seed)
     log.info(f"Set random seed to {args.seed}")
     
-    # Create output directories
-    os.makedirs(args.save_dir, exist_ok=True)
-    save_path_validity = os.path.join(args.save_dir, "results_validity.pt")
-    save_path_redundancy = os.path.join(args.save_dir, "results_redundancy.pt")
-    save_path_both = os.path.join(args.save_dir, "results_both.pt")
+    # Extract dataset name and ReasonEval name for directory structure
+    dataset_name = args.dataset_path.split('/')[-1] if '/' in args.dataset_path else args.dataset_path
+    reasoneval_name = args.reasoneval_path.split('/')[-1] if '/' in args.reasoneval_path else args.reasoneval_path
+    
+    # Create save paths with directory structure
+    save_dir = os.path.join(args.save_dir, dataset_name)
+    os.makedirs(save_dir, exist_ok=True)
+    
+    save_path_validity = os.path.join(save_dir, f"{reasoneval_name}_validity.pt")
+    save_path_redundancy = os.path.join(save_dir, f"{reasoneval_name}_redundancy.pt")
+    save_path_both = os.path.join(save_dir, f"{reasoneval_name}_both.pt")
     
     # Load dataset
     log.info(f"Loading dataset: {args.dataset_path} ({args.dataset_split})")
@@ -436,6 +442,7 @@ def main(args):
     log.info(f"  - Temperature: {args.temperature}")
     log.info(f"  - Max tokens per step: {args.max_new_tokens}")
     log.info(f"  - Max steps: {args.max_steps}")
+    log.info(f"  - Results will be saved to: {save_dir}/")
     
     # Create generator
     log.info(f"Using device {args.device} for base model, {args.reasoneval_device} for ReasonEval")
