@@ -460,6 +460,7 @@ def main(args):
         reasoneval_model_path=args.reasoneval_path,
         candidates_per_step=args.n,
         max_steps=args.max_steps,
+        max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         device=args.device,
         reasoneval_device=args.reasoneval_device,

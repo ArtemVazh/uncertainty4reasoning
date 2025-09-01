@@ -50,6 +50,15 @@ python online_bestofn/run_direct_online_bestofn.py \
 
 The `--feature-batch-size` parameter controls how many candidates are processed at once during UHead feature extraction. Lower values use less memory but may be slightly slower. Default is 1 for maximum memory efficiency.
 
+**Automatic OOM Fallback**: If the UHead feature extraction runs out of memory, it will progressively reduce the batch size:
+1. First attempt: Use the specified `--feature-batch-size`
+2. On OOM: Try half the current batch size (minimum 2)
+3. Still OOM: Try batch_size=2
+4. Still OOM: Try batch_size=1
+5. If still OOM with batch_size=1, the error is raised
+
+This progressive fallback ensures the evaluation can adapt to available GPU memory while maintaining the best possible performance.
+
 ### Running with PRM
 
 ```bash

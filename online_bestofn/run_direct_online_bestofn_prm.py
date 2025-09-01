@@ -239,6 +239,7 @@ def main(args):
         prm_model_path=args.prm_path,
         candidates_per_step=args.n,
         max_steps=args.max_steps,
+        max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         device=args.device,
         prm_device=args.prm_device,

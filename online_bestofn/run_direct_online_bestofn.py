@@ -60,7 +60,7 @@ def get_parser():
                         help="Number of candidates per step")
     parser.add_argument("--temperature", type=float, default=0.7,
                         help="Generation temperature")
-    parser.add_argument("--max-new-tokens", type=int, default=250,
+    parser.add_argument("--max-new-tokens", type=int, default=350,
                         help="Max tokens per step")
     parser.add_argument("--max-steps", type=int, default=20,
                         help="Maximum number of reasoning steps")
@@ -232,6 +232,7 @@ def main(args):
         uhead_path=args.uhead_path,
         candidates_per_step=args.n,
         max_steps=args.max_steps,
+        max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         device=args.device,
         verbose=args.verbose,

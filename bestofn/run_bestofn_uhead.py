@@ -35,6 +35,7 @@ def get_parser():
     parser.add_argument("--temperature", type=float, default=1.0, help="Generation temperature")
     parser.add_argument("--max-new-tokens", type=int, default=256, help="Generation max_new_tokens")
     parser.add_argument("--subset", type=int, default=None, help="Only process first N samples from dataset")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     return parser
 
 

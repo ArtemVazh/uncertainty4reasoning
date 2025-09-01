@@ -34,6 +34,7 @@ class DirectOnlineBestOfN:
         uhead_path: str,
         candidates_per_step: int = 10,
         max_steps: int = 20,
+        max_new_tokens: int = 350,
         temperature: float = 0.7,
         device: str = "cuda",
         verbose: bool = True,
@@ -43,6 +44,7 @@ class DirectOnlineBestOfN:
         self.model = model
         self.candidates_per_step = candidates_per_step
         self.max_steps = max_steps
+        self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.device = device
         self.verbose = verbose
@@ -52,7 +54,7 @@ class DirectOnlineBestOfN:
         self.detector = StepBoundaryDetector(
             step_patterns=["- Step", "<Answer>:", "\n<Answer>:"],
             answer_patterns=["<Answer>:", "\n<Answer>:"],
-            max_tokens_per_step=350
+            max_tokens_per_step=max_new_tokens
         )
         
         self.step_generator = StepCandidateGenerator(
@@ -60,7 +62,7 @@ class DirectOnlineBestOfN:
             detector=self.detector,
             candidates_per_step=candidates_per_step,
             temperature=temperature,
-            max_new_tokens=350,
+            max_new_tokens=max_new_tokens,
             device=device
         )
         
