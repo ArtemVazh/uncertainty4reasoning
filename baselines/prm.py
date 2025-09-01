@@ -188,11 +188,13 @@ class SkyworkPRMStatCalculator(StatCalculator):
         print(f"Initializing Skywork PRM model from {self.model_path}...")
 
         start_time = time.time()
+
         def keep_alive(start_time):
             while not done_loading[0]:
                 elapsed = time.time() - start_time
                 print(f"\rStill loading... (elapsed: {elapsed:.1f}s)", flush=True)
                 time.sleep(1)
+
         done_loading = [False]
         thread = threading.Thread(target=keep_alive, args=(start_time,))
         thread.start()
@@ -213,22 +215,15 @@ class SkyworkPRMStatCalculator(StatCalculator):
             return []
 
         # Reconstruct full response from Claim list
-        response = ""
-        for i, step in enumerate(steps):
-            response += step.claim_text.strip() + self.step_token
-
-        print('Preparing input...')
+        response = self.step_token.join([step.claim_text.strip() for step in steps])
 
         processed = prepare_input(question, response, tokenizer=self.tokenizer, step_token=self.step_token)
         input_ids, step_locs, reward_flags = processed
 
-        print('Preparing batch input...')
         # Prepare batch-compatible inputs
         input_ids_batch, attention_mask, reward_flags = prepare_batch_input_for_model(
             [input_ids], [reward_flags], self.tokenizer.pad_token_id
         )
-
-        print('Running model...')
 
         device = self.model.pretrained_model.device
         with torch.no_grad():
@@ -238,10 +233,11 @@ class SkyworkPRMStatCalculator(StatCalculator):
                 return_probs=True,
             )
 
-        print('Deriving step rewards...')
-
         step_rewards = derive_step_rewards(rewards.detach().to("cpu", dtype=torch.float32), reward_flags)
-        return step_rewards[0].tolist()  # Single input
+        r = step_rewards[0]
+        if isinstance(r, list):
+            return r
+        return r.tolist()
 
     def __call__(self, dependencies: Dict[str, np.array], texts: List[str], model: Model, max_new_tokens: int = 100,
                  **kwargs) -> Dict[str, np.ndarray]:
@@ -253,6 +249,126 @@ class SkyworkPRMStatCalculator(StatCalculator):
             assert len(r) == len(claims)
             rewards.append(r)
         return {"prm_scores": rewards}
+
+
+# --- add near the other imports at the top (no new deps needed) ---
+# (nothing extra required)
+
+# --- add this new class alongside the other calculators ---
+class RLHFlowLlama31PRMCalculator(StatCalculator):
+    """
+    PRM adapter that matches RLHFlow's official evaluator logic:
+    - Build a chat with each step as a user turn, followed by assistant '+'
+    - For each step (one forward pass), read P('+' | context) from logits
+    - Matches https://github.com/RLHFlow/RLHF-Reward-Modeling/blob/main/math-rm/prm_evaluate.py
+    """
+    def __init__(
+        self,
+        prompt_path: str | None = None,
+        model_path: str = "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
+        device: str = "auto",
+    ):
+        super().__init__()
+        self.model_path = model_path
+        self.device = device if device != "auto" else ("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.tokenizer = None
+        self.model = None
+        self.prompt = open(prompt_path, 'r').read() if prompt_path else "{q}"
+        # tokens for '+' and '-'
+        self.plus_token_id = None
+        self.minus_token_id = None
+        self.candidate_token_ids = None
+
+    @staticmethod
+    def meta_info() -> Tuple[List[str], List[str]]:
+        return ["prm_scores"], ["claims"]
+
+    def init(self):
+        if self.model is not None:
+            return
+        log.info(f"Initializing {self.model_path} model on device={self.device}")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+        # match RLHFlow dtype + CausalLM head
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_path, torch_dtype=torch.bfloat16
+        ).to(self.device).eval()
+
+        # padding settings used in the official script
+        self.tokenizer.padding_side = "right"
+        if getattr(self.tokenizer, "pad_token", None) is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        if getattr(self.model.config, "pad_token_id", None) is None:
+            self.model.config.pad_token_id = self.model.config.eos_token_id
+
+        # candidate ids for classification
+        self.plus_token_id = self.tokenizer.encode("+")[-1]
+        self.minus_token_id = self.tokenizer.encode("-")[-1]
+        self.candidate_token_ids = [self.plus_token_id, self.minus_token_id]
+
+    def _score_last_plus(self, input_ids: torch.Tensor, logits: torch.Tensor) -> float:
+        """
+        Read P('+') at the last assistant '+' token, matching RLHFlow's logic.
+        Primary path: use the official '-3' index.
+        Fallback: locate the last '+' token in input_ids and use logits at (pos - 1).
+        """
+        # official simple indexing (template-dependent)
+        idx = -3
+        # fallback: find actual '+' position if available
+        try:
+            plus_positions = (input_ids[0] == self.plus_token_id).nonzero(as_tuple=True)[0]
+            if len(plus_positions) > 0:
+                idx = int(plus_positions[-1].item()) - 1  # logits[t] predicts token at t+1
+        except Exception:
+            pass
+
+        cand_logits = logits[:, idx, self.candidate_token_ids]  # shape [1, 2]
+        probs = F.softmax(cand_logits, dim=-1)[:, 0]            # P('+')
+        return probs[0].detach().to('cpu', dtype=torch.float32).item()
+
+    def get_rewards(self, question: str, steps: list[Claim]) -> list[float]:
+        """
+        One forward pass per step, like RLHFlow's evaluator:
+        conversation: [user: (question + step1), assistant: '+', user: step2, assistant: '+', ...]
+        return a list of P('+') for each step.
+        """
+        self.init()
+        if not steps:
+            return []
+
+        rewards: list[float] = []
+        conversation: list[Dict[str, str]] = []
+
+        for k, step in enumerate(steps):
+            if k == 0:
+                text = f"{question.strip()} {step.claim_text.strip()}"
+            else:
+                text = step.claim_text.strip()
+            conversation.append({"role": "user", "content": text})
+            conversation.append({"role": "assistant", "content": "+"})
+
+            # teacher-forced scoring for the last '+'
+            input_ids = self.tokenizer.apply_chat_template(
+                conversation, return_tensors="pt"
+            ).to(self.model.device)
+
+            with torch.no_grad():
+                logits = self.model(input_ids).logits  # [1, T, V]
+
+            rewards.append(self._score_last_plus(input_ids, logits))
+
+        return rewards
+
+    def __call__(self, dependencies: Dict[str, np.array], texts: List[str], model: Model,
+                 max_new_tokens: int = 100, **kwargs) -> Dict[str, np.ndarray]:
+        self.init()
+        out: list[list[float]] = []
+        for input_text, claims in zip(texts, dependencies["claims"]):
+            question = parse(self.prompt, input_text).named['q']
+            r = self.get_rewards(question, claims)
+            assert len(r) == len(claims)
+            out.append(r)
+        return {"prm_scores": out}
+
 
 
 def load_prm_calculator_by_model_path(
@@ -272,12 +388,32 @@ def load_prm_calculator_by_model_path(
             model_path=model_path,
             device=device,
         )
+    elif model_path.startswith("RLHFlow/Llama3.1-8B-PRM-"):
+        return RLHFlowLlama31PRMCalculator(
+            prompt_path=prompt_path,
+            model_path=model_path,
+            device=device,
+        )
     elif "Skywork" in model_path:
         return SkyworkPRMStatCalculator(
             prompt_path=prompt_path,
             model_path=model_path,
             device=device,
         )
+    elif model_path.startswith("GenPRM/"):
+        from baselines.gen_prm import GenPRMStatCalculator, GenPRMStatCalculatorSimple
+        if model_path.endswith('-simple'):
+            return GenPRMStatCalculatorSimple(
+                prompt_path=prompt_path,
+                model_path=model_path[:-len('-simple')],
+                device=device,
+            )
+        else:
+            return GenPRMStatCalculator(
+                prompt_path=prompt_path,
+                model_path=model_path,
+                device=device,
+            )
     else:
         raise ValueError(f"Unsupported model path prefix for PRM model: {model_path}")
 
