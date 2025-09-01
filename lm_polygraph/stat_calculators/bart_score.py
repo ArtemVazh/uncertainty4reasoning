@@ -5,7 +5,6 @@ from typing import List, Dict, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import BartTokenizer, BartForConditionalGeneration
 from .stat_calculator import StatCalculator
 from lm_polygraph.utils.model import WhiteboxModel
 
@@ -37,6 +36,7 @@ class BartScoreCalculator(StatCalculator):
         self.lsm = None
 
     def _setup(self):
+        from transformers import BartTokenizer, BartForConditionalGeneration
         self.tokenizer = BartTokenizer.from_pretrained(self.checkpoint)
         self.model = BartForConditionalGeneration.from_pretrained(self.checkpoint)
         self.model.eval()

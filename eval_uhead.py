@@ -17,6 +17,7 @@ from lm_polygraph.utils.dataset import Dataset
 from lm_polygraph.utils.model import WhiteboxModel, BlackboxModel
 from lm_polygraph.utils.processor import Logger
 from lm_polygraph.generation_metrics import *
+from lm_polygraph.estimators import *
 from lm_polygraph.ue_metrics import *
 from lm_polygraph.utils.common import load_external_module
 from lm_polygraph.utils.generation_parameters import GenerationParameters
@@ -67,7 +68,7 @@ def main(args):
 
     save_path = args.save_path if "save_path" in args else save_path
 
-    if args.seed is None or len(args.seed) == 0:
+    if getattr(args, "seed", None) is None or len(args.seed) == 0:
         args.seed = [1]
 
     cache_kwargs = {}
@@ -214,11 +215,7 @@ def get_stat_calculator_names(config):
     model_type = "Whitebox" if getattr(config.model, "type", "Whitebox") != "Blackbox" else "Blackbox"
     language = getattr(config, "language", "en")
 
-    output_attentions = getattr(config, "output_attentions", True)
     hf_cache = getattr(config, "hf_cache", None)
-    blackbox_supports_logprobs = model_type == "Blackbox" and getattr(
-        config.model, "supports_logprobs", False
-    )
 
     all_stat_calculators = []
     if "auto" in config.stat_calculators:
@@ -228,6 +225,7 @@ def get_stat_calculator_names(config):
             hf_cache,
             deberta_batch_size=getattr(config, "deberta_batch_size", 100),
             deberta_device=getattr(config, "deberta_device", None),
+            output_attentions=getattr(config, "output_attentions", True),
         )
 
     for stat_calculator in config.stat_calculators:

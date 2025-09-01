@@ -9,6 +9,12 @@ from .max_probability import (
     MaximumSequenceProbability,
     MaximumTokenProbability,
 )
+from .step.num_sem_sets import StepsNumSemSets
+from .step.semantic_entropy import StepsSemanticEntropy
+from .step.eccentricity import StepsEccentricity
+from .step.lexical_similarity import StepsLexicalSimilarity
+from .step.degmat import StepsDegMat
+from .step.dissimilarity import StepsDissimilarity
 from .claim_conditioned_probability import ClaimConditionedProbability
 from .token_entropy import MeanTokenEntropy, TokenEntropy
 from .pointwise_mutual_information import (

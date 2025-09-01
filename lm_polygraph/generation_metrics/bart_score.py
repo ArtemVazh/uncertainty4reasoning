@@ -4,7 +4,6 @@ from typing import List, Dict
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import BartTokenizer, BartForConditionalGeneration
 from .generation_metric import GenerationMetric
 
 log = logging.getLogger(__name__)
@@ -46,6 +45,7 @@ class BartScoreSeqMetric(GenerationMetric):
         return "BARTScoreSeq-" + self.score_type
 
     def _setup(self):
+        from transformers import BartTokenizer, BartForConditionalGeneration
         self.tokenizer = BartTokenizer.from_pretrained(self.checkpoint)
         self.model = BartForConditionalGeneration.from_pretrained(self.checkpoint)
         self.model.eval()
