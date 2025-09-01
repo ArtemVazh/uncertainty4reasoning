@@ -17,8 +17,13 @@ def get_parser():
         "Qwen/Qwen2.5-Math-7B-PRM800K",
         "Qwen/Qwen2.5-Math-PRM-7B",
         "peiyi9979/math-shepherd-mistral-7b-prm",
-        # "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B",
-        # "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B",
+        "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
+        "RLHFlow/Llama3.1-8B-PRM-Deepseek-Data",
+        # "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B",  # loads slow (can take up to 15 mins)
+        "GenPRM/GenPRM-1.5B-simple",
+        # "GenPRM/GenPRM-1.5B",  # very slow
+        "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
+        "RLHFlow/Llama3.1-8B-PRM-Deepseek-Data",
     ], help="Path(s) or name(s) of the PRM model(s)")
     parser.add_argument('--device', type=str, default="auto", help="Device map setting for model loading")
     parser.add_argument('--prompt-file', type=str, default="configs/gsm8k_3shot_prompt.txt",
@@ -39,6 +44,8 @@ def main(args):
         man = UEManager.load_from_hub(args.hf_manager_path)
         steps = extract_steps(man, args.base_model_path, args.hf_cache)
         questions = extract_questions(man, args.prompt_file)
+        if len(steps) < len(questions):
+            questions = questions[:len(steps)]
 
         rewards: list[float] = []
         for i in tqdm(range(len(questions)), desc=f'Evaluating {prm_model_path}'):

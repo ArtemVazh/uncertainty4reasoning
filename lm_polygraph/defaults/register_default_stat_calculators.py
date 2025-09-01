@@ -5,6 +5,7 @@ from lm_polygraph.stat_calculators import *
 from lm_polygraph.utils.factory_stat_calculator import (
     StatCalculatorContainer,
 )
+from lm_polygraph.stat_calculators.step import *
 
 
 def create_container(
@@ -90,7 +91,7 @@ def register_default_stat_calculators(
             GreedyProbsCalculator,
             "lm_polygraph.defaults.stat_calculator_builders.default_GreedyProbsCalculator",
             {
-                "output_attentions": True,
+                "output_attentions": output_attentions,
             },
         )
         _register(EntropyCalculator)
@@ -103,6 +104,24 @@ def register_default_stat_calculators(
         _register(PromptCalculator)
         _register(SamplingPromptCalculator)
         _register(ClaimPromptCalculator)
+
+        _register(
+            StepsGreedyNLISimilarityCalculator,
+            "lm_polygraph.defaults.stat_calculator_builders.default_StepsGreedyNLISimilarityCalculator",
+            {
+                "nli_model": nli_config
+            },
+        )
+        _register(
+            StepsSemanticMatrixCalculator,
+            "lm_polygraph.defaults.stat_calculator_builders.default_StepsSemanticMatrixCalculator",
+            {
+                "nli_model": nli_config
+            },
+        )
+
+        _register(StepsSemanticClassesCalculator)
+        _register(StepwiseSamplingCalculator)
         _register(
             CrossEncoderSimilarityMatrixCalculator,
             "lm_polygraph.defaults.stat_calculator_builders.default_CrossEncoderSimilarityMatrixCalculator",

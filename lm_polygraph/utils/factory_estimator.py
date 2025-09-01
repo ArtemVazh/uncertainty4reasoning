@@ -46,6 +46,12 @@ def load_simple_estimators(name: str, config):
         ClaimConditionedProbabilityClaim,
         RandomBaselineClaim,
         FocusClaim,
+        StepsDissimilarity,
+        StepsEccentricity,
+        StepsSemanticEntropy,
+        StepsLexicalSimilarity,
+        StepsDegMat,
+        StepsNumSemSets,
     ]
 
     try:

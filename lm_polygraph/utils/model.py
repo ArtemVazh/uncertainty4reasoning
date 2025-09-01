@@ -14,7 +14,6 @@ from transformers import (
     AutoModelForCausalLM,
     AutoConfig,
     LogitsProcessorList,
-    BartForConditionalGeneration,
     StoppingCriteria,
     StoppingCriteriaList,
     PreTrainedTokenizer,
@@ -585,6 +584,7 @@ class WhiteboxModel(Model):
         elif any(
             ["BartModel" in architecture for architecture in config.architectures]
         ):
+            from transformers import BartForConditionalGeneration
             model_type = "Seq2SeqLM"
             model = BartForConditionalGeneration.from_pretrained(model_path, **kwargs)
         else:
