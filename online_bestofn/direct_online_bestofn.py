@@ -37,7 +37,8 @@ class DirectOnlineBestOfN:
         temperature: float = 0.7,
         device: str = "cuda",
         verbose: bool = True,
-        generation_batch_size: int = None
+        generation_batch_size: int = None,
+        feature_batch_size: int = 1
     ):
         self.model = model
         self.candidates_per_step = candidates_per_step
@@ -67,7 +68,8 @@ class DirectOnlineBestOfN:
             model=model,
             uhead_path=uhead_path,
             device=device,
-            batch_size=candidates_per_step  # Process all candidates at once
+            batch_size=candidates_per_step,  # Process all candidates at once
+            feature_batch_size=feature_batch_size  # Process features in smaller batches for memory efficiency
         )
     
     def generate_trajectory(self, prompt: str) -> Dict[str, any]:
@@ -410,7 +412,6 @@ if __name__ == "__main__":
     # Example usage
     import argparse
     from datasets import load_dataset
-    from configs.load_qwen import load_model as load_qwen_model, load_tokenizer as load_qwen_tokenizer
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-path", type=str, required=True)

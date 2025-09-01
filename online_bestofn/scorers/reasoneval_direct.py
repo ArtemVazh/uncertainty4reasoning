@@ -121,6 +121,9 @@ class DirectReasonEvalScorer(UncertaintyBasedScorer):
             except Exception as e:
                 log.warning(f"Failed to score candidate: {e}")
                 all_uncertainties.append([0.5])  # Neutral uncertainty
+            
+            # Clean up memory after each candidate
+            torch.cuda.empty_cache()
         
         return all_uncertainties
     
@@ -315,6 +318,9 @@ class DirectReasonEvalScorerSeparate(DirectReasonEvalScorer):
                 log.warning(f"Failed to score candidate: {e}")
                 all_validities.append([0.5])  # Neutral scores
                 all_redundancies.append([0.5])
+            
+            # Clean up memory after each candidate
+            torch.cuda.empty_cache()
         
         return all_validities, all_redundancies
     

@@ -70,6 +70,8 @@ def get_parser():
                         help="Batch size for candidate generation (default: same as --n)")
     parser.add_argument("--sequential-generation", action="store_true",
                         help="Generate candidates one by one to save memory")
+    parser.add_argument("--feature-batch-size", type=int, default=1,
+                        help="Batch size for UHead feature extraction to save memory (default: 1)")
     
     # Output arguments
     parser.add_argument("--save-dir", type=str, required=True,
@@ -175,6 +177,7 @@ def main(args):
     log.info(f"  - Temperature: {args.temperature}")
     log.info(f"  - Max tokens per step: {args.max_new_tokens}")
     log.info(f"  - Max steps: {args.max_steps}")
+    log.info(f"  - Feature batch size: {args.feature_batch_size}")
     
 
     
@@ -232,7 +235,8 @@ def main(args):
         temperature=args.temperature,
         device=args.device,
         verbose=args.verbose,
-        generation_batch_size=batch_size
+        generation_batch_size=batch_size,
+        feature_batch_size=args.feature_batch_size
     )
     
     # Process dataset

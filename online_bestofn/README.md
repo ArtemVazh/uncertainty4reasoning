@@ -40,7 +40,15 @@ python online_bestofn/run_direct_online_bestofn.py \
     --batch-size 2 \
     --n 10 \
     # ... other arguments
+
+# Control UHead feature extraction batch size (default: 1)
+python online_bestofn/run_direct_online_bestofn.py \
+    --feature-batch-size 1 \
+    --n 10 \
+    # ... other arguments
 ```
+
+The `--feature-batch-size` parameter controls how many candidates are processed at once during UHead feature extraction. Lower values use less memory but may be slightly slower. Default is 1 for maximum memory efficiency.
 
 ### Running with PRM
 

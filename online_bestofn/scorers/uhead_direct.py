@@ -34,13 +34,15 @@ class DirectUHeadScorer(UncertaintyBasedScorer):
         model: WhiteboxModel,
         uhead_path: str,
         device: str = "cuda",
-        batch_size: int = 8
+        batch_size: int = 8,
+        feature_batch_size: int = 1
     ):
         super().__init__("DirectUHead")
         self.model = model
         self.uhead_path = uhead_path
         self.device = device
         self.batch_size = batch_size
+        self.feature_batch_size = feature_batch_size  # For memory-efficient feature extraction
         self.uhead = None
         self.steps_extractor = StepsExtractor(progress_bar=False)
         
@@ -91,6 +93,9 @@ class DirectUHeadScorer(UncertaintyBasedScorer):
             batch_candidates = candidates[i:i + self.batch_size]
             batch_uncertainties = self._score_batch(trajectory, batch_candidates)
             all_uncertainties.extend(batch_uncertainties)
+            
+            # Clean up GPU memory after each batch
+            torch.cuda.empty_cache()
             
         return all_uncertainties
     
@@ -164,7 +169,52 @@ class DirectUHeadScorer(UncertaintyBasedScorer):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], int]:
-        """Extract UHead features for a batch of inputs"""
+        """Extract UHead features for a batch of inputs with internal batching for memory efficiency"""
+        
+        batch_size = input_ids.shape[0]
+        
+        # If batch is small enough, process all at once
+        if batch_size <= self.feature_batch_size:
+            return self._extract_features_single_batch(input_ids, attention_mask)
+        
+        # Otherwise, process in smaller chunks
+        all_features = []
+        generated_length = None
+        
+        for i in range(0, batch_size, self.feature_batch_size):
+            end_idx = min(i + self.feature_batch_size, batch_size)
+            
+            # Extract sub-batch
+            sub_input_ids = input_ids[i:end_idx]
+            sub_attention_mask = attention_mask[i:end_idx]
+            
+            # Process sub-batch
+            sub_features, sub_generated_length = self._extract_features_single_batch(
+                sub_input_ids, sub_attention_mask
+            )
+            
+            all_features.append(sub_features)
+            
+            # Verify consistent generation length
+            if generated_length is None:
+                generated_length = sub_generated_length
+            elif generated_length != sub_generated_length:
+                log.warning(f"Inconsistent generation lengths: {generated_length} vs {sub_generated_length}")
+            
+            # Clean up after each sub-batch
+            torch.cuda.empty_cache()
+        
+        # Concatenate all features
+        features = torch.cat(all_features, dim=0)
+        
+        return features, generated_length
+    
+    def _extract_features_single_batch(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], int]:
+        """Extract features for a single batch (original implementation)"""
         
         batch_size = input_ids.shape[0]
         
@@ -199,6 +249,10 @@ class DirectUHeadScorer(UncertaintyBasedScorer):
         # Extract features
         with torch.no_grad():
             features = self.uhead.feature_extractor(batch, generation_outputs)
+        
+        # Clean up memory immediately
+        del generation_outputs
+        torch.cuda.empty_cache()
             
         return features, generated_length
     

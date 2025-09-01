@@ -105,6 +105,9 @@ class DirectPRMScorer(RewardBasedScorer):
             except Exception as e:
                 log.warning(f"Failed to score candidate: {e}")
                 all_rewards.append([0.0])  # Neutral reward
+            
+            # Clean up memory after each candidate
+            torch.cuda.empty_cache()
         
         return all_rewards
     
