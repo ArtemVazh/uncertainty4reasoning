@@ -19,7 +19,7 @@ def get_parser():
         "peiyi9979/math-shepherd-mistral-7b-prm",
         "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
         "RLHFlow/Llama3.1-8B-PRM-Deepseek-Data",
-        # "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B",  # loads slow (can take up to 15 mins)
+        "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B",  # loads slow (can take up to 15 mins)
         "GenPRM/GenPRM-1.5B-simple",
         # "GenPRM/GenPRM-1.5B",  # very slow
         "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
