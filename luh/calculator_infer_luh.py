@@ -24,7 +24,7 @@ class CalculatorInferLuh(StatCalculator):
             generations_cache_dir=None,
             args_generate=dict(),
             predict_token_uncertainties=True,
-            device="cuda"
+            device="cuda" if torch.cuda.is_available() else "cpu",
     ):
         super().__init__()
 

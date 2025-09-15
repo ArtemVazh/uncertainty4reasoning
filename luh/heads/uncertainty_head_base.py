@@ -73,7 +73,7 @@ class UncertaintyHeadBase(nn.Module):
             )
 
         cfg = OmegaConf.load(config_path)
-        weights = torch.load(weights_path, weights_only=True)
+        weights = torch.load(weights_path, weights_only=True, map_location=torch.device('cpu'))
         feature_extractor = load_feature_extractor(cfg.feature_extractor, base_model)
         ue_head_cfg = cfg.uncertainty_head if cfg.uncertainty_head is not None else dict()
         uq_head = cls(feature_extractor, cfg=cfg, **ue_head_cfg)

@@ -485,8 +485,10 @@ class UEManager:
         return self.metrics
 
     def save(self, save_path: str):
-        save_path = Path(save_path)
-        save_path.mkdir(parents=True, exist_ok=True)
+        if not str(save_path).endswith('.pth'):
+            save_path = Path(save_path)
+            save_path.mkdir(parents=True, exist_ok=True)
+            save_path = Path(save_path) / "ue_manager.pth"
         torch.save(
             {
                 "state": self.state,
@@ -495,7 +497,7 @@ class UEManager:
                 "estimations": self.estimations,
                 "stats": self.stats,
             },
-            Path(save_path) / "ue_manager.pth",
+            save_path,
         )
 
     def push_to_hub(self, repo_id: str | None = None, token: str | None = None):

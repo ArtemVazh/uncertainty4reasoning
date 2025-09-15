@@ -92,6 +92,29 @@ HYDRA_CONFIG=configs/polygraph_eval_claim_reasoning.yaml \
     +hf_save_path=rediska0123/ue_manager_gsm8k_Qwen3-1.7B
 ```
 
+### Alternatively: first eval UHead, then run annotation on different machine
+
+```bash
+# run uhead without annotation
+PYTHONPATH=./ \
+WANDB_PROJECT=ue-reasoning \
+HYDRA_CONFIG=configs/polygraph_eval_claim_reasoning_no_annotation.yaml \
+python eval_uhead.py \
+    model.path=Qwen/Qwen3-1.7B \
+    dataset=rediska0123/test_gsm8k_Qwen3-1.7B \
+    stat_calculators.2.cfg.uq_head_path=rediska0123/uhead_Qwen3-1.7B_gsm8k \
+    +hf_save_path=rediska0123/ue_manager_gsm8k_Qwen3-1.7B
+
+# run annotation (will update existing manager in `man-path`)
+PYTHONPATH=./ \
+DEEPSEEK_API_KEY=$(<configs/deepseek_api_key.txt) \
+python eval_anno.py \
+    --man-path rediska0123/ue_manager_gsm8k_Qwen3-1.7B \
+    --model-path Qwen/Qwen3-8B \
+    --prompt-path configs/qwen3_prompt.txt \
+    --n-threads 8
+```
+
 ## 5. Evaluate baselines
 
 ### Process-Reward Model baseline
