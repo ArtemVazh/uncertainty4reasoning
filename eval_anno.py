@@ -4,6 +4,7 @@ from transformers import AutoTokenizer
 
 from lm_polygraph import UEManager
 from lm_polygraph.stat_calculators.step.steps_extractor import StepsExtractor
+from lm_polygraph.stat_calculators.step.steps_extractor_phi4_planning import StepsExtractor as StepsExtractorPhi4Planning
 from synthetic_dataset_generation.utils.step_fact_check import StepFactCheck
 
 
@@ -60,7 +61,15 @@ def main(args):
         model=args.anno_model,
         n_threads=args.n_threads,
     )
-    steps_extractor = StepsExtractor()
+    if (
+            args.model_path == 'microsoft/phi-4' and
+            any(x in args.man_path for x in ['_on_trip', '_on_meeting', '_on_calendar'])
+    ):
+        print('Using special steps extractor for Phi-4 planning')
+        steps_extractor = StepsExtractorPhi4Planning()
+    else:
+        print('Using regular steps extractor')
+        steps_extractor = StepsExtractor()
     man.stats.update(steps_extractor(
         man.stats,
         man.stats['input_texts'],
