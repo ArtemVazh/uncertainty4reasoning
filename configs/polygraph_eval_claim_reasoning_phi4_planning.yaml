@@ -42,7 +42,7 @@ estimators:
 stat_calculators:
   - auto
   - name: ClaimExtractor
-    builder: synthetic_dataset_generation.utils.steps_extractor_phi4_planning
+    builder: lm_polygraph.stat_calculators.step.steps_extractor_phi4_planning
     cfg:
     stats:
       - "claims"
