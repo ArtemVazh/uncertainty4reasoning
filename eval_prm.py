@@ -24,6 +24,8 @@ def get_parser():
         # "GenPRM/GenPRM-1.5B",  # very slow
         "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
         "RLHFlow/Llama3.1-8B-PRM-Deepseek-Data",
+        "universalprm/Universal-PRM",
+        "HuggingFaceH4/Qwen2.5-Math-1.5B-Instruct-PRM-0.2",
     ], help="Path(s) or name(s) of the PRM model(s)")
     parser.add_argument('--device', type=str, default="auto", help="Device map setting for model loading")
     parser.add_argument('--prompt-file', type=str, default="configs/gsm8k_3shot_prompt.txt",

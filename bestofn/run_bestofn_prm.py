@@ -7,7 +7,7 @@ import torch
 
 from datasets import load_dataset
 
-from baselines.prm import PRMStatCalculator
+from baselines.prm import load_prm_calculator_by_model_path
 from bestofn.estimators.prm import PRMEstimator
 from lm_polygraph import WhiteboxModel
 from bestofn.bestofn_utils import update_bestofn
@@ -29,6 +29,18 @@ def get_parser():
     parser.add_argument("--model-path", type=str, default="Qwen/Qwen3-1.7B", help="Model name or path for generation")
     parser.add_argument("--device", type=str, default="auto", help="Device to use (e.g., 'cuda' or 'cpu')")
     parser.add_argument("--subset", type=int, default=None, help="Only process first N samples from dataset")
+    parser.add_argument('--prm-model-path', type=str, nargs='+', default=[
+        "Qwen/Qwen2.5-Math-7B-PRM800K",
+        "Qwen/Qwen2.5-Math-PRM-7B",
+        "peiyi9979/math-shepherd-mistral-7b-prm",
+        "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
+        "RLHFlow/Llama3.1-8B-PRM-Deepseek-Data",
+        "GenPRM/GenPRM-1.5B-simple",
+        "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B",  # loads slow (can take up to 15 mins)
+        # # "GenPRM/GenPRM-1.5B",  # very slow
+        "universalprm/Universal-PRM",
+        "HuggingFaceH4/Qwen2.5-Math-1.5B-Instruct-PRM-0.2",
+    ], help="Path(s) or name(s) of the PRM model(s)")
     return parser
 
 
@@ -60,20 +72,24 @@ def main(args):
 
     log.info(f"Loading model: {args.model_path}")
     model = load_model(args.model_path, args.device)
-
-    estimators = [
-        PRMEstimator(),
-    ]
-    stat_calculators = [
-        StepsExtractor(progress_bar=False),
-        PRMStatCalculator(args.prompt_file),
-    ]
-
-    update_bestofn(
-        dataset, model, estimators, stat_calculators,
-        args.save_path, save_frequency=None,
-        verbose=False,
-    )
+    for prm_model_path in args.prm_model_path:
+        print(f'Running {prm_model_path}')
+        prm_name = prm_model_path.split('/')[-1]
+        stat_calculators = [
+            StepsExtractor(progress_bar=False),
+            load_prm_calculator_by_model_path(
+                model_path=prm_model_path,
+                device=args.device,
+                scores_key=prm_name,  # save score under PRM name
+            )
+        ]
+        estimators = [PRMEstimator(scores_key=prm_name)]
+        update_bestofn(
+            dataset, model, estimators, stat_calculators,
+            args.save_path, save_frequency=None,
+            verbose=False,
+        )
+        print(f'Done running {prm_model_path}')
 
 
 if __name__ == "__main__":

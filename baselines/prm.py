@@ -7,6 +7,7 @@ import numpy as np
 import logging
 import time
 import threading
+from transformers import pipeline
 
 from baselines.skywork_prm.skywork_prm import SkyworkO1_7B, SkyworkO1_1_5B
 from lm_polygraph.stat_calculators.extract_claims import Claim
@@ -24,6 +25,7 @@ class PRMStatCalculator(StatCalculator):
             prompt_path: str | None = None,
             model_path: str = "Qwen/Qwen2.5-Math-7B-PRM800K",
             device: str = "auto",
+            scores_key: str = "prm_scores",
     ):
         super().__init__()
         self.model_path = model_path
@@ -31,6 +33,7 @@ class PRMStatCalculator(StatCalculator):
         self.prm_tokenizer = None
         self.prm_model = None
         self.prompt = open(prompt_path, 'r').read() if prompt_path else "{q}"
+        self.scores_key = scores_key
 
     @staticmethod
     def meta_info() -> Tuple[List[str], List[str]]:
@@ -90,7 +93,7 @@ class PRMStatCalculator(StatCalculator):
             r = self.get_rewards(question, claims)
             assert len(r) == len(claims)
             rewards.append(r)
-        return {"prm_scores": rewards}
+        return {self.scores_key: rewards}
 
 
 class MathShepherdPRMCalculator(StatCalculator):
@@ -99,6 +102,7 @@ class MathShepherdPRMCalculator(StatCalculator):
             prompt_path: str | None = None,
             model_path: str = "peiyi9979/math-shepherd-mistral-7b-prm",
             device: str = "auto",
+            scores_key: str = "prm_scores",
     ):
         super().__init__()
         self.model_path = model_path
@@ -113,6 +117,7 @@ class MathShepherdPRMCalculator(StatCalculator):
         self.bad_token = "-"
         self.step_tag_id = None
         self.candidate_token_ids = None
+        self.scores_key = scores_key
 
     @staticmethod
     def meta_info() -> Tuple[List[str], List[str]]:
@@ -160,7 +165,7 @@ class MathShepherdPRMCalculator(StatCalculator):
             r = self.get_rewards(question, claims)
             assert len(r) == len(claims)
             rewards.append(r)
-        return {"prm_scores": rewards}
+        return {self.scores_key: rewards}
 
 
 class SkyworkPRMStatCalculator(StatCalculator):
@@ -169,6 +174,7 @@ class SkyworkPRMStatCalculator(StatCalculator):
             prompt_path: str | None = None,
             model_path: str = "Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B",
             device: str = "auto",
+            scores_key: str = "prm_scores",
     ):
         super().__init__()
         self.prompt = open(prompt_path, "r").read() if prompt_path else "{q}"
@@ -177,6 +183,7 @@ class SkyworkPRMStatCalculator(StatCalculator):
         self.tokenizer = None
         self.model = None
         self.step_token = "\n"
+        self.scores_key = scores_key
 
     @staticmethod
     def meta_info() -> Tuple[List[str], List[str]]:
@@ -248,7 +255,7 @@ class SkyworkPRMStatCalculator(StatCalculator):
             r = self.get_rewards(question, claims)
             assert len(r) == len(claims)
             rewards.append(r)
-        return {"prm_scores": rewards}
+        return {self.scores_key: rewards}
 
 
 # --- add near the other imports at the top (no new deps needed) ---
@@ -267,6 +274,7 @@ class RLHFlowLlama31PRMCalculator(StatCalculator):
         prompt_path: str | None = None,
         model_path: str = "RLHFlow/Llama3.1-8B-PRM-Mistral-Data",
         device: str = "auto",
+        scores_key: str = "prm_scores",
     ):
         super().__init__()
         self.model_path = model_path
@@ -278,6 +286,7 @@ class RLHFlowLlama31PRMCalculator(StatCalculator):
         self.plus_token_id = None
         self.minus_token_id = None
         self.candidate_token_ids = None
+        self.scores_key = scores_key
 
     @staticmethod
     def meta_info() -> Tuple[List[str], List[str]]:
@@ -367,38 +376,209 @@ class RLHFlowLlama31PRMCalculator(StatCalculator):
             r = self.get_rewards(question, claims)
             assert len(r) == len(claims)
             out.append(r)
-        return {"prm_scores": out}
+        return {self.scores_key: out}
 
+
+class UniversalPRMCalculator(StatCalculator):
+    def __init__(
+        self,
+        prompt_path: str | None = None,
+        model_path: str = "universalprm/Universal-PRM",
+        device: str = "auto",
+        scores_key: str = "prm_scores",
+    ):
+        super().__init__()
+        self.model_path = model_path
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device  # "cuda" or "cpu"
+        self.tokenizer = None
+        self.model = None
+        self.prompt = open(prompt_path, 'r').read() if prompt_path else "{q}"
+        self.separator = "\n\n"
+        self.scores_key = scores_key
+
+    @staticmethod
+    def meta_info() -> Tuple[List[str], List[str]]:
+        return ["prm_scores"], ["claims"]
+
+    def init(self):
+        if self.model is not None:
+            return
+        log.info(f"Initializing {self.model_path} on device={self.device}")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+        # The model card uses AutoModel + device_map=device + bf16 + trust_remote_code=True
+        self.model = AutoModel.from_pretrained(
+            self.model_path,
+            device_map=self.device,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        ).eval()
+
+    def _build_messages(self, question: str, reference_answer: str | None = None):
+        # Model card pattern: append "The reference answer is: ..." to the user message.
+        if reference_answer and reference_answer.strip():
+            q_wgt = question + "\n\n###\n\nThe reference answer is: " + reference_answer
+        else:
+            q_wgt = question + "\n\n###\n\nThe reference answer is: There is no reference answer for this question."
+        return [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": q_wgt},
+        ]
+
+    def get_rewards(self, question: str, steps: list[Claim]) -> list[float]:
+        self.init()
+        if not steps:
+            return []
+
+        messages = self._build_messages(question, reference_answer=None)
+        query_ids = self.tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True
+        )
+
+        rewards: list[float] = []
+        with torch.no_grad():
+            for k in range(1, len(steps) + 1):
+                responses = self.separator.join([s.claim_text.strip() for s in steps[:k]]) + self.separator
+                answer_tokens = self.tokenizer(responses)["input_ids"]
+                answer_tokens += [self.tokenizer.eos_token_id]
+                qa_ids = query_ids + answer_tokens
+
+                input_ids = torch.tensor([qa_ids], dtype=torch.long)
+                if self.device == "cuda":
+                    input_ids = input_ids.cuda()
+                outputs = self.model(input_ids=input_ids)
+                reward = torch.sigmoid(outputs[0]).detach().to("cpu", dtype=torch.float32).item()
+                rewards.append(float(reward))
+        return rewards
+
+    def __call__(self, dependencies: Dict[str, np.array], texts: List[str], model: Model,
+                 max_new_tokens: int = 100, **kwargs) -> Dict[str, np.ndarray]:
+        self.init()
+        out: list[list[float]] = []
+        for input_text, claims in zip(texts, dependencies["claims"]):
+            question = parse(self.prompt, input_text).named["q"]
+            r = self.get_rewards(question, claims)
+            assert len(r) == len(claims)
+            out.append(r)
+        return {self.scores_key: out}
+
+
+class H4Qwen25Math15BPRM02Calculator(StatCalculator):
+    def __init__(
+        self,
+        prompt_path: str | None = None,
+        model_path: str = "HuggingFaceH4/Qwen2.5-Math-1.5B-Instruct-PRM-0.2",
+        device: str = "auto",
+        scores_key: str = "prm_scores",
+    ):
+        super().__init__()
+        self.model_path = model_path
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device  # "cuda" or "cpu"
+        self.pipe = None
+        self.prompt = open(prompt_path, 'r').read() if prompt_path else "{q}"
+        self.separator = "\n\n"  # IMPORTANT: must match training separator per model card
+        self.scores_key = scores_key
+
+    @staticmethod
+    def meta_info() -> Tuple[List[str], List[str]]:
+        return ["prm_scores"], ["claims"]
+
+    def init(self):
+        if self.pipe is not None:
+            return
+        log.info(f"Initializing {self.model_path} token-classification pipeline on device={self.device}")
+        # The card uses: pipeline("token-classification", model=..., device="cuda")
+        self.pipe = pipeline("token-classification", model=self.model_path, device=self.device)
+
+    def _p_true_from_last_entity(self, preds: List[Dict]) -> float:
+        if not preds:
+            return 0.5  # neutral fallback
+        last = preds[-1]
+        label = last.get("entity", "")
+        score = float(last.get("score", 0.5))
+        if label == "LABEL_1":
+            return score
+        elif label == "LABEL_0":
+            return 1.0 - score
+        else:
+            # Unexpected label name; default to neutral
+            return 0.5
+
+    def get_rewards(self, question: str, steps: list[Claim]) -> list[float]:
+        self.init()
+        if not steps:
+            return []
+
+        rewards: list[float] = []
+        for k in range(1, len(steps) + 1):
+            prefix_steps = [s.claim_text.strip() for s in steps[:k]]
+            text = self.separator.join([question] + prefix_steps) + self.separator
+            preds = self.pipe(text)
+            rewards.append(self._p_true_from_last_entity(preds))
+        return rewards
+
+    def __call__(self, dependencies: Dict[str, np.array], texts: List[str], model: Model,
+                 max_new_tokens: int = 100, **kwargs) -> Dict[str, np.ndarray]:
+        self.init()
+        out: list[list[float]] = []
+        for input_text, claims in zip(texts, dependencies["claims"]):
+            question = parse(self.prompt, input_text).named["q"]
+            r = self.get_rewards(question, claims)
+            assert len(r) == len(claims)
+            out.append(r)
+        return {self.scores_key: out}
 
 
 def load_prm_calculator_by_model_path(
         prompt_path: str | None = None,
         model_path: str = "Qwen/Qwen2.5-Math-7B-PRM800K",
         device: str = "auto",
+        scores_key: str = "prm_scores",
 ):
     if model_path.startswith("Qwen/"):
         return PRMStatCalculator(
             prompt_path=prompt_path,
             model_path=model_path,
             device=device,
+            scores_key=scores_key,
         )
     elif model_path.startswith("peiyi9979/"):
         return MathShepherdPRMCalculator(
             prompt_path=prompt_path,
             model_path=model_path,
             device=device,
+            scores_key=scores_key,
         )
     elif model_path.startswith("RLHFlow/Llama3.1-8B-PRM-"):
         return RLHFlowLlama31PRMCalculator(
             prompt_path=prompt_path,
             model_path=model_path,
             device=device,
+            scores_key=scores_key,
+        )
+    elif model_path.startswith("universalprm/"):
+        return UniversalPRMCalculator(
+            prompt_path=prompt_path,
+            model_path=model_path,
+            device=device,
+            scores_key=scores_key,
+        )
+    elif model_path == "HuggingFaceH4/Qwen2.5-Math-1.5B-Instruct-PRM-0.2":
+        return H4Qwen25Math15BPRM02Calculator(
+            prompt_path=prompt_path,
+            model_path=model_path,
+            device=device,
+            scores_key=scores_key,
         )
     elif "Skywork" in model_path:
         return SkyworkPRMStatCalculator(
             prompt_path=prompt_path,
             model_path=model_path,
             device=device,
+            scores_key=scores_key,
         )
     elif model_path.startswith("GenPRM/"):
         from baselines.gen_prm import GenPRMStatCalculator, GenPRMStatCalculatorSimple
@@ -407,12 +587,14 @@ def load_prm_calculator_by_model_path(
                 prompt_path=prompt_path,
                 model_path=model_path[:-len('-simple')],
                 device=device,
+                scores_key=scores_key,
             )
         else:
             return GenPRMStatCalculator(
                 prompt_path=prompt_path,
                 model_path=model_path,
                 device=device,
+                scores_key=scores_key,
             )
     else:
         raise ValueError(f"Unsupported model path prefix for PRM model: {model_path}")
