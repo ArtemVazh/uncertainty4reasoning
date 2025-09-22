@@ -14,7 +14,7 @@ ue_layer:
   head_cfg:
     head_type: claim
     feature_extractor:
-    - name: luq.feature_extractors.lookback_lens
+    - name: luh.feature_extractors.lookback_lens
     uncertainty_head:
       head_dim: 512
       n_layers: 1
