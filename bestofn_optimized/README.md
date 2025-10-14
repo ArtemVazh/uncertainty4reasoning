@@ -7,7 +7,7 @@ python -m synthetic_dataset_generation.run_generate_texts \
   --dataset-path rediska0123/test_math_no_prm800k_Qwen3-8B --dataset-split train \
   --model-path Qwen/Qwen3-8B \
   --save-path ./test_math_no_prm800k_Qwen3-8B_texts \
-  --n-samples-per-input 32 --max-new-tokens 256 
+  --n-samples-per-input 32 --batch-size 8 --max-new-tokens 256 
 ```
 
 2. Score texts with UHead and unsupervised baselines:
