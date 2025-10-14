@@ -8,5 +8,10 @@ def load_tokenizer(model_path: str):
 
 
 def load_model(model_path: str, device_map: str):
-    model = AutoModelForCausalLM.from_pretrained(model_path, device_map=device_map, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map=device_map,
+        trust_remote_code=True,
+        attn_implementation="eager",
+    )
     return model

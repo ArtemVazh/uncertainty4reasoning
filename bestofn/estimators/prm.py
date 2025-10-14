@@ -12,15 +12,19 @@ class PRMEstimator(Estimator):
     def __init__(
             self,
             reduction: str = 'mean',
+            scores_key: str = 'prm_scores',
     ):
         super().__init__(
-            ["prm_scores", "claims"],
+            [scores_key, "claims"],
             "sequence",
         )
+        self.scores_key = scores_key
         self.reduction = reduction
 
     def __str__(self):
-        return f"PRM"
+        if self.scores_key == "prm_scores":
+            return f"PRM"
+        return self.scores_key
 
     def _reduce(self, x):
         if self.reduction == 'mean':
@@ -34,7 +38,7 @@ class PRMEstimator(Estimator):
     def __call__(self, stats: Dict[str, np.ndarray]) -> list[float]:
         seq_ue = []
         for sample_prms, sample_claims in zip(
-                stats["prm_scores"],
+                stats[self.scores_key],
                 stats["claims"],
         ):
             claim_ue = [-x for x in sample_prms]
