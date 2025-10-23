@@ -131,7 +131,7 @@ class ProxyCalculator(StatCalculator):
         log.info(f"Infering LLM with new tokens of shape {combined_batch['input_ids'].shape} on device={model.device()}...")
         start_time = time.time()
         with torch.no_grad():
-            out = model(**combined_batch, output_attentions=True)
+            out = model(**combined_batch, output_attentions=self.output_attentions, output_hidden_states=True)
             logits = out.logits.log_softmax(-1)
         log.info(f"Done infering in {round(time.time() - start_time, 2)} seconds")
 

@@ -92,7 +92,7 @@ def load_model(config):
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
-    base_model.config.attn_implementation = "eager"
+    base_model.config.attn_implementation = "spda"
 
     # Do not enable gradient checkpointing when the base model is frozen (no parameters require gradients).
     # Enabling it in that case triggers the warning:

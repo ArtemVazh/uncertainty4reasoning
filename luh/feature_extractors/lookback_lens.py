@@ -6,9 +6,10 @@ def _process_attn_nans(t):
     t[torch.isnan(t)] = 0
     return t
 
-def process_attentions(attentions_all, attention_mask, is_training) -> list[tuple]:
+def process_attentions(attentions_all, attention_mask, is_training, stack_layers=False) -> list[tuple]:
     # Returns: attentions in format (seq_len, layer_num, batch_sz, heads_num, 1, prev_seq_len)
     layer = 0  # only for tensor shapes
+    stack_fn = (lambda x: torch.stack(list(x))) if stack_layers else tuple
 
     if is_training:
         # put zeros in masked positions
@@ -18,7 +19,7 @@ def process_attentions(attentions_all, attention_mask, is_training) -> list[tupl
                 attentions_all[layer_num][i, :, att_masks[i] == 0, :] = 0
 
         return [
-            tuple(
+            stack_fn(
                 _process_attn_nans(attentions_all[l][:, :, i:i + 1, :i + 1])
                 for l in range(len(attentions_all))
             )
@@ -35,7 +36,7 @@ def process_attentions(attentions_all, attention_mask, is_training) -> list[tupl
         inp_len = attentions_all[0][layer].shape[-2]
         outp_len = len(attentions_all[1:])
         attn_outp = [
-            tuple(
+            stack_fn(
                 _process_attn_nans(a[l][:, :, :, :i + 1])
                 for l in range(len(attentions_all[0]))
             )
