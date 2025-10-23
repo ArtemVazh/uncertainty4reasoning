@@ -12,7 +12,6 @@ def load_model(model_path: str, device_map: str):
         model_path,
         device_map=device_map,
         trust_remote_code=True,
-        attn_implementation="eager",
         attn_implementation="sdpa",
     )
     return model
