@@ -18,7 +18,7 @@ python -m bestofn_optimized.run_uhead \
   --model-path Qwen/Qwen3-8B \
   --uhead-path JingweiNi/uhead_claim_Qwen3-8B_fixed_prm_layer1_dim512_head16_e5_lr5e-4_pos3 \
   --save-path ./test_math_no_prm800k_Qwen3-8B_texts_uhead \
-  --save_every 50 --batch-size 10
+  --save-every 50 --batch-size 10
 ```
 
 3. Score texts with all PRMs:
