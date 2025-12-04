@@ -123,12 +123,20 @@ def load_model(config):
 
         uq_head.apply(reinitialize_weights)
 
-    model = CausalLMWithUncertaintyLayerClaim(
-        base_model,
-        ue_head=uq_head,
-        ue_pos_weight=config.ue_layer.pos_weight,
-        output_attention=uq_head.output_attentions,
-    )
+    if uq_head.model_type == "claim":
+        model = CausalLMWithUncertaintyLayerClaim(
+            base_model,
+            ue_head=uq_head,
+            ue_pos_weight=config.ue_layer.pos_weight,
+            output_attention=uq_head.output_attentions,
+        )
+    elif uq_head.model_type == "token":
+        model = CausalLMWithUncertaintyLayer(
+            base_model,
+            ue_head=uq_head,
+            ue_pos_weight=config.ue_layer.pos_weight,
+            output_attention=uq_head.output_attentions,
+        )
 
     # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
     if hasattr(base_model, 'dtype'):
@@ -504,11 +512,13 @@ class TrainerCustom(Trainer):
             *args,
             eval_dataset: Dataset,
             additional_eval_datasets: dict[str, Dataset] | None = None,
+            compute_metrics_fn=compute_metrics_claims,
             **kwargs,
     ):
         super().__init__(*args, **kwargs, eval_dataset=eval_dataset)
         self.eval_dataset = eval_dataset
         self.additional_eval_datasets = additional_eval_datasets or {}
+        self.compute_metrics_fn = compute_metrics_fn
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix: str = "eval"):
         """
@@ -522,7 +532,7 @@ class TrainerCustom(Trainer):
         buckets = defaultdict(list)  # metric -> [values from main eval + all additional evals]
 
         # ---- Main eval set ----
-        self.compute_metrics = lambda eval_pred: compute_metrics_claims(self.eval_dataset, eval_pred)
+        self.compute_metrics = lambda eval_pred: self.compute_metrics_fn(self.eval_dataset, eval_pred)
         base_eval_ds = self.eval_dataset if eval_dataset is None else eval_dataset
         base_metrics = super().evaluate(
             eval_dataset=base_eval_ds,
@@ -543,7 +553,7 @@ class TrainerCustom(Trainer):
 
         # ---- Additional datasets ----
         for name, ds in self.additional_eval_datasets.items():
-            self.compute_metrics = (lambda eval_pred, d=ds: compute_metrics_claims(d, eval_pred))
+            self.compute_metrics = (lambda eval_pred, d=ds: self.compute_metrics_fn(d, eval_pred))
             m = super().evaluate(
                 eval_dataset=ds,
                 ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
@@ -698,15 +708,27 @@ def main(config):
         # label_names=["verified"]
     )
 
-    def dataset_filter(inst):
-        return len(inst['claims']) > 0
+    if model.ue_head.model_type == "claim":
+        def dataset_filter(inst):
+            return len(inst['claims']) > 0
 
-    tokenized_data = tokenized_data.filter(dataset_filter)
-    data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
+        # tokenized_data = {
+        #     split: ds.filter(dataset_filter)
+        #     for split, ds in tokenized_data.items()
+        # }
+        tokenized_data = tokenized_data.filter(dataset_filter)
+        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
+    elif model.ue_head.model_type == "token":
+        data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
 
     callbacks = [LoggerCallback()]
     if config.do_save_checkpoints:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=3))
+
+    if model.ue_head.model_type == "claim":
+        f_eval = compute_metrics_claims
+    elif model.ue_head.model_type == "token":
+        f_eval = compute_metrics
 
     trainer = TrainerCustom(
         model=model,
@@ -717,6 +739,7 @@ def main(config):
         data_collator=data_collator,
         callbacks=callbacks,
         additional_eval_datasets=additional_test_datasets,
+        compute_metrics_fn=f_eval,
     )
 
     if config.do_hyperopt:

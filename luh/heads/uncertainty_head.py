@@ -20,8 +20,10 @@ class UncertaintyHead(UncertaintyHeadBase):
         enable_feature_projection_layer: bool = True,
         use_transformer_encoder: bool = True,
         cfg = None,  # Temporary we save initializing cfg in the head itself
+        mask_future_tokens: bool = False,
     ):
         super().__init__(feature_extractor, cfg=cfg)
+        self.mask_future_tokens = mask_future_tokens
 
         self.feature_extractor = feature_extractor
         self.use_transformer_encoder = use_transformer_encoder
@@ -75,7 +77,24 @@ class UncertaintyHead(UncertaintyHeadBase):
             # positions = torch.arange(X.size(1), device=X.device).unsqueeze(0).expand(X.shape[0], X.size(1))
             # pos_embeds = self.positional_encoding(positions)
             # out = out + pos_embeds
-            out = self.transformer_encoder(out, src_key_padding_mask=src_key_padding_mask)
+
+            # Optional causal mask to prevent attending to future tokens
+            attn_mask = None
+            if self.mask_future_tokens:
+                seq_len = out.size(1)
+                # nn.Transformer expects mask shape (S, S), where S = seq_len
+                # This is an additive mask: 0 for allowed, -inf for disallowed
+                attn_mask = torch.triu(
+                    torch.full(
+                        (seq_len, seq_len),
+                        float('-inf'),
+                        device=out.device,
+                        dtype=out.dtype,
+                    ),
+                    diagonal=1,  # everything above the main diagonal is masked
+                )
+
+            out = self.transformer_encoder(out, mask=attn_mask, src_key_padding_mask=src_key_padding_mask)
 
         out = self.classifier(out)
 

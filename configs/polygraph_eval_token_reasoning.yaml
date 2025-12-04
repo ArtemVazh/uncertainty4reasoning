@@ -1,0 +1,99 @@
+hydra:
+  run:
+    dir: ${cache_path}/${task}/${model.path}/${dataset}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+model:
+  type: CausalLM
+  path_to_load_script: ./load_qwen.py
+  path: Qwen/Qwen2.5-Math-7B
+  load_model_args:
+    device_map: auto
+  load_tokenizer_args: {}
+
+task: bio
+dataset: ['rediska0123/test_gsm8k']
+text_column: question
+label_column: answer
+eval_split: train
+load_from_disk: false
+subsample_eval_dataset: -1
+use_claim_ue: true
+
+generation_metrics: [{
+  'name': 'StepFactCheck',
+  'kwargs': {
+    'prompt_file': 'configs/qwen3_prompt_general.txt',
+    'model': 'deepseek-reasoner',
+    'n_threads': 16,
+    'progress_bar': false
+  }
+}]
+
+estimators:
+  - name: RandomBaselineClaim
+  - name: MaximumClaimProbability
+  # - name: ClaimConditionedProbabilityClaim
+  #   cfg:
+  #     nli_context: "fact_pref"
+  - name: MaxTokenEntropyClaim
+  - name: PerplexityClaim
+  - name: luh.builder_LuhClaimEstimator
+    cfg:
+      reduce_type: "mean"
+
+stat_calculators:
+  - auto
+  - name: ClaimExtractor
+    builder: synthetic_dataset_generation.utils.steps_extractor
+    cfg:
+    stats:
+      - "claims"
+      - "claim_texts_concatenated"
+      - "claim_input_texts_concatenated"
+    dependencies:
+      - "greedy_texts"
+      - "greedy_tokens"
+  - name: Luh
+    builder: luh.builder_CalculatorInferLuh
+    cfg:
+      predict_token_uncertainties: true
+      uq_head_path: "rediska0123/uhead_Qwen2.5-Math-7B"
+      args_generate:
+        max_new_tokens: 1024
+        min_new_tokens: 2
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 50
+        do_sample: true
+        repetition_penalty: 1.
+        diversity_penalty: 0.
+        length_penalty: 1.
+        stop_strings: ["\n\n", "}\n"]
+
+      generations_cache_dir: ""
+    dependencies:
+    stats:
+      - "input_texts"
+      - "input_tokens"
+      - "hidden_states"
+      - "greedy_log_probs"
+      - "greedy_logits"
+      - "greedy_tokens"
+      - "greedy_texts"
+      - "greedy_log_likelihoods"
+      - "greedy_tokens_alternatives"
+      - "uhead_features"
+
+max_new_tokens: 1024
+ignore_exceptions: false
+language: en
+batch_size: 1
+deberta_batch_size: 100
+seed:
+    - 1
+cache_path: ./workdir/cache
+save_path: '${hydra:run.dir}'
+report_to_wandb: true
+
+n_threads: 16
+log_time: true
