@@ -387,28 +387,26 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
         dict_batch = dict(batch)
         return dict_batch
 
-
 def compute_claim_level_metrics(tokenized_data, logits):
-    from itertools import chain
-
+    """Reference implementation before optimization."""
     claim_level_targets = list(chain(*tokenized_data["verified"]))
 
     num_instances = logits.shape[0]
     claim_level_preds = []
     for i in range(num_instances):
-        prompt_tokens = tokenized_data[i]["prompt_tokens"]  # TODO: this is incorrect due to padding
+        prompt_tokens = tokenized_data[i]["prompt_tokens"]
         generated_tokens = tokenized_data[i]["input_ids"][len(prompt_tokens):]
-        context_length = logits[i].shape[0] - len(generated_tokens)  # To mitigate padding 
+        context_length = logits[i].shape[0] - len(generated_tokens)
         for claim in tokenized_data["claims"][i]:
-            # compute ue score
-
-            claim_preds = [logits[i, context_length + token - 1] for token in claim['aligned_token_ids']]
+            claim_preds = [
+                logits[i, context_length + token - 1] for token in claim["aligned_token_ids"]
+            ]
             ue_score = np.mean(claim_preds)
             claim_level_preds.append(ue_score)
 
     assert len(claim_level_targets) == len(claim_level_preds)
 
-    mask = ~np.isnan(claim_level_targets)
+    mask = (~np.isnan(claim_level_targets)) & (claim_level_targets != -100)
     claim_level_targets = np.array(claim_level_targets)[mask]
     claim_level_preds = np.array(claim_level_preds)[mask]
     precs, recs, _ = precision_recall_curve(claim_level_targets, claim_level_preds)
@@ -500,6 +498,49 @@ class LoggerCallback(TrainerCallback):
             log.info(logs)
 
 
+class UHeadOnlySaveCallback(TrainerCallback):
+    """Custom callback to save only uncertainty heads instead of full model checkpoints."""
+    
+    def on_save(self, args, state, control, **kwargs):
+        """Override default save behavior to save only uncertainty head."""
+        if state.is_local_process_zero:
+            # Get the model and trainer from kwargs
+            model = kwargs.get('model')
+            trainer = kwargs.get('trainer')
+
+            if model is not None and hasattr(model, 'ue_head'):
+                # Prepare checkpoint directory path
+                checkpoint_folder = f"uhead-{state.global_step}"
+                output_dir = Path(args.output_dir) / checkpoint_folder
+                uhead_path = output_dir
+
+                # Check if DeepSpeed is being used
+                if trainer and hasattr(trainer, 'deepspeed') and trainer.deepspeed:
+                    # Import deepspeed if available
+                    try:
+                        import deepspeed
+                        # Gather parameters for saving when using DeepSpeed
+                        with torch.no_grad(), deepspeed.zero.GatheredParameters(model.ue_head.parameters(), modifier_rank=0):
+                            if trainer.is_world_process_zero():
+                                output_dir.mkdir(exist_ok=True, parents=True)
+                                model.ue_head.save(uhead_path)
+                                log.info(f"Saved uncertainty head checkpoint (DeepSpeed) to: {uhead_path}")
+                    except ImportError:
+                        log.warning("DeepSpeed not available, falling back to regular save")
+                        output_dir.mkdir(exist_ok=True, parents=True)
+                        model.ue_head.save(uhead_path)
+                        log.info(f"Saved uncertainty head checkpoint to: {uhead_path}")
+                else:
+                    # Regular saving without DeepSpeed
+                    output_dir.mkdir(exist_ok=True, parents=True)
+                    model.ue_head.save(uhead_path)
+                    log.info(f"Saved uncertainty head checkpoint to: {uhead_path}")
+
+        # Allow default model saving to continue
+        control.should_save = True
+        return control
+
+
 from collections import defaultdict
 import numpy as np
 from datasets import Dataset
@@ -527,58 +568,88 @@ class TrainerCustom(Trainer):
           - per-additional-dataset:      eval_<ds_name>_<metric>
           - means (all sets):            eval_mean_<metric>
         """
-        results: dict[str, float] = {}
-        avg_metrics = {"accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"}
-        buckets = defaultdict(list)  # metric -> [values from main eval + all additional evals]
+        callbacks_to_remove = []
+        for callback in self.callback_handler.callbacks:
+            if isinstance(callback, EarlyStoppingCallback):
+                callbacks_to_remove.append(callback)
 
-        # ---- Main eval set ----
-        self.compute_metrics = lambda eval_pred: self.compute_metrics_fn(self.eval_dataset, eval_pred)
-        base_eval_ds = self.eval_dataset if eval_dataset is None else eval_dataset
-        base_metrics = super().evaluate(
-            eval_dataset=base_eval_ds,
-            ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
-            metric_key_prefix="eval",
-        )
-        # base_metrics keys like "eval_f1", "eval_pr_auc", plus loss/runtime/etc.
-        for k, v in base_metrics.items():
-            if k.startswith("eval_"):
-                metric = k[len("eval_"):]  # "f1", "roc_auc", ...
-                val = float(v)
-                # nice hierarchy + table-friendly alias
-                results[f"eval_{metric}"] = val
-                if metric in avg_metrics:
-                    buckets[metric].append(val)
-            else:
-                results[k] = v
+        # Temporarily remove problematic callbacks
+        for callback in callbacks_to_remove:
+            self.callback_handler.callbacks.remove(callback)
 
-        # ---- Additional datasets ----
-        for name, ds in self.additional_eval_datasets.items():
-            self.compute_metrics = (lambda eval_pred, d=ds: self.compute_metrics_fn(d, eval_pred))
-            m = super().evaluate(
-                eval_dataset=ds,
+        try:
+            results: dict[str, float] = {}
+            avg_metrics = {"accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"}
+            buckets = defaultdict(list)  # metric -> [values from main eval + all additional evals]
+
+            # ---- Main eval set ----
+            self.compute_metrics = lambda eval_pred: self.compute_metrics_fn(self.eval_dataset, eval_pred)
+            base_eval_ds = self.eval_dataset if eval_dataset is None else eval_dataset
+            log.info(f"Running base eval on dataset of size {len(base_eval_ds)}")
+            base_metrics = super().evaluate(
+                eval_dataset=base_eval_ds,
                 ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
-                metric_key_prefix=f"eval_{name}",
+                metric_key_prefix="eval",
             )
-            for k, v in m.items():
-                if not k.startswith(f"eval_{name}_"):
-                    # preserve any unexpected extras under a namespaced key
-                    results[f"{name}_{k}"] = v
+            # base_metrics keys like "eval_f1", "eval_pr_auc", plus loss/runtime/etc.
+            for k, v in base_metrics.items():
+                if k.startswith("eval_"):
+                    metric = k[len("eval_"):]  # "f1", "roc_auc", ...
+                    val = float(v)
+                    # nice hierarchy + table-friendly alias
+                    results[f"eval_{metric}"] = val
+                    if metric in avg_metrics:
+                        buckets[metric].append(val)
+                else:
+                    results[k] = v
+            log.info("Finished base eval")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # ---- Additional datasets ----
+            for name, ds in self.additional_eval_datasets.items():
+                log.info(f"Running additional eval '{name}' on dataset of size {len(ds)}")
+                self.compute_metrics = (lambda eval_pred, d=ds: self.compute_metrics_fn(d, eval_pred))
+                m = super().evaluate(
+                    eval_dataset=ds,
+                    ignore_keys=["logits"] if ignore_keys is None else ignore_keys,
+                    metric_key_prefix=f"eval_{name}",
+                )
+                for k, v in m.items():
+                    if not k.startswith(f"eval_{name}_"):
+                        # preserve any unexpected extras under a namespaced key
+                        results[f"{name}_{k}"] = v
+                        continue
+                    metric = k[len(f"eval_{name}_"):]
+                    val = float(v)
+                    results[f"eval_{name}_{metric}"] = val
+                    if metric in avg_metrics:
+                        buckets[metric].append(val)
+                log.info(f"Finished additional eval '{name}'")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            mean_results = {}
+            for metric, vals in buckets.items():
+                if not vals:
                     continue
-                metric = k[len(f"eval_{name}_"):]
-                val = float(v)
-                results[f"eval_{name}_{metric}"] = val
-                if metric in avg_metrics:
-                    buckets[metric].append(val)
+                mean_val = float(np.mean(vals))
+                mean_results[f"eval_mean_{metric}"] = mean_val
+                results[f"eval_mean_{metric}"] = mean_val
+            
+            # log mean results, others are logged in the callback in super().evaluate
+            log.info(f"Mean results: {mean_results}")
+            self.log(mean_results)
 
-        mean_results = {}
-        for metric, vals in buckets.items():
-            if not vals:
-                continue
-            mean_val = float(np.mean(vals))
-            mean_results[f"eval_mean_{metric}"] = mean_val
-            results[f"eval_mean_{metric}"] = mean_val
+        finally:
+            # Restore the callbacks we temporarily removed
+            for callback in callbacks_to_remove:
+                self.callback_handler.callbacks.append(callback)
 
-        self.log(mean_results)
+        # Now trigger callbacks with the final computed metrics
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, results)
+
+        self._memory_tracker.stop_and_update_metrics(results)
 
         return results
 
@@ -692,7 +763,7 @@ def main(config):
         # fp16=True,  # Had to comment for Qwen2.5-Math-1.5B, othervise it output nan logits and attentions
         # fp16_full_eval=False,
         load_best_model_at_end=True if config.do_save_checkpoints else False,
-        metric_for_best_model="eval_mean_f1",
+        metric_for_best_model="eval_mean_pr_auc",
         greater_is_better=True,
         eval_strategy="epoch",
         logging_strategy="epoch",
@@ -724,6 +795,7 @@ def main(config):
     callbacks = [LoggerCallback()]
     if config.do_save_checkpoints:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=3))
+        callbacks.append(UHeadOnlySaveCallback())
 
     if model.ue_head.model_type == "claim":
         f_eval = compute_metrics_claims
@@ -747,7 +819,7 @@ def main(config):
         # For optimization with wandb, use the wandb sweep feature
 
         def compute_objective(metrics):
-            return metrics["eval_mean_f1"]  # mean across all additional datasets
+            return metrics["eval_mean_pr_auc"]
 
         def hp_space(trial):
             return {

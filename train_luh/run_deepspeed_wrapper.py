@@ -56,7 +56,7 @@ hydra_cfg_name = str(Path(hydra_cfg_path).name) if hydra_cfg_path is not None el
 def main(config):
     # Add default DeepSpeed config if not specified
     if not hasattr(config, 'deepspeed_config') or config.deepspeed_config is None:
-        config.deepspeed_config = "configs/ds_config.json"
+        OmegaConf.update(config, "deepspeed_config", "configs/ds_config.json")
     
     output_dir = HydraConfig.get().runtime.output_dir
     log.info(f"Output directory: {output_dir}")
@@ -67,22 +67,22 @@ def main(config):
     for h in log.handlers:
         hf_logger.addHandler(h)
 
-    if config.report_to == "wandb":
-        import wandb
+    # if config.report_to == "wandb":
+    #     import wandb
 
-        wandb_cfg = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
-        config_path_hydra = [
-            path["path"]
-            for path in HydraConfig.get().runtime.config_sources
-            if path["schema"] == "file"
-        ][0]
-        wandb_cfg["HYDRA_CONFIG"] = (
-            Path(config_path_hydra) / HydraConfig.get().job.config_name
-        )
-        os.environ["WANDB_DIR"] = str(Path(output_dir))
-        project = os.environ["WANDB_PROJECT"]
-        wandb.init(project=project, dir=output_dir, config=wandb_cfg)
-        wandb_save_directory(Path(output_dir) / ".hydra")
+    #     wandb_cfg = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
+    #     config_path_hydra = [
+    #         path["path"]
+    #         for path in HydraConfig.get().runtime.config_sources
+    #         if path["schema"] == "file"
+    #     ][0]
+    #     wandb_cfg["HYDRA_CONFIG"] = (
+    #         Path(config_path_hydra) / HydraConfig.get().job.config_name
+    #     )
+    #     os.environ["WANDB_DIR"] = str(Path(output_dir))
+    #     project = os.environ["WANDB_PROJECT"]
+    #     wandb.init(project=project, dir=output_dir, config=wandb_cfg)
+    #     wandb_save_directory(Path(output_dir) / ".hydra")
 
     hf_logger.info("Init transformers logger.")
 
@@ -128,6 +128,7 @@ def main(config):
 
     log.info("Loading dataset...")
     tokenized_data = load_data(config, tokenizer)
+    additional_test_datasets = load_additional_test_datasets(config, tokenizer)
     log.info("Done.")
     log.info(repr(tokenized_data))
 
@@ -147,7 +148,8 @@ def main(config):
         # fp16_full_eval=False,
         load_best_model_at_end=True if (config.do_save_checkpoints and 
                                        getattr(config.training_arguments, 'eval_strategy', 'epoch') != 'no') else False,
-        metric_for_best_model=getattr(config.training_arguments, 'metric_for_best_model', 'pr_auc'),
+        metric_for_best_model=getattr(config.training_arguments, 'metric_for_best_model', 'eval_mean_pr_auc'),
+        greater_is_better=getattr(config.training_arguments, 'greater_is_better', True),
         eval_strategy=getattr(config.training_arguments, 'eval_strategy', 'epoch'),
         logging_strategy=getattr(config.training_arguments, 'logging_strategy', 'epoch'),
         save_strategy="epoch" if config.do_save_checkpoints else "no",
@@ -156,7 +158,7 @@ def main(config):
         report_to=config.report_to if config.report_to else None,
         include_num_input_tokens_seen=getattr(config.training_arguments, 'include_num_input_tokens_seen', True),
         gradient_checkpointing=getattr(config.training_arguments, 'gradient_checkpointing', False),
-        dataloader_num_workers=getattr(config.training_arguments, 'dataloader_num_workers', 1),
+        dataloader_num_workers=getattr(config.training_arguments, 'dataloader_num_workers', 4),
         remove_unused_columns=getattr(config.training_arguments, 'remove_unused_columns', False),
         # DeepSpeed configuration
         deepspeed=config.deepspeed_config,
@@ -182,16 +184,17 @@ def main(config):
         data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
     
     callbacks = [LoggerCallback()]
-    if (config.do_save_checkpoints and 
+    if (config.do_save_checkpoints and
         getattr(config.training_arguments, 'eval_strategy', 'epoch') != 'no'):
         # Make early stopping patience configurable with default of 5
-        early_stopping_patience = getattr(config.training_arguments, 'early_stopping_patience', 5)
+        early_stopping_patience = getattr(config.training_arguments, 'early_stopping_patience', 3)
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=early_stopping_patience))
+        callbacks.append(UHeadOnlySaveCallback())
 
     if model.ue_head.model_type == "claim":
-        f_eval = lambda eval_pred_: compute_metrics_claims(tokenized_data["test"], eval_pred_)
+        f_eval = compute_metrics_claims
     elif model.ue_head.model_type == "token":
-        f_eval = lambda eval_pred_: compute_metrics(tokenized_data["test"], eval_pred_)
+        f_eval = compute_metrics
 
     trainer = TrainerCustom(
         model=model,
@@ -201,7 +204,8 @@ def main(config):
         args=train_args,
         data_collator=data_collator,
         callbacks=callbacks,
-        compute_metrics=f_eval,
+        additional_eval_datasets=additional_test_datasets,
+        compute_metrics_fn=f_eval,
     )
 
     if config.do_hyperopt:
@@ -209,7 +213,7 @@ def main(config):
         # For optimization with wandb, use the wandb sweep feature
 
         def compute_objective(metrics):
-            return metrics["eval_f1"]
+            return metrics["eval_mean_pr_auc"]
 
         def hp_space(trial):
             return {
@@ -254,7 +258,7 @@ def main(config):
             trainer.model.orig_base_model.config.use_cache = False
 
             try:
-                trainer.train(ignore_keys_for_eval=["logits"])
+                trainer.train(ignore_keys_for_eval=["logits"], resume_from_checkpoint=getattr(config, 'resume_from_checkpoint', None))
             except KeyboardInterrupt:
                 log.info("Training interrupted.")
                 
@@ -267,7 +271,7 @@ def main(config):
                 # DeepSpeed-aware saving
                 if hasattr(trainer, 'deepspeed') and trainer.deepspeed:
                     # Gather parameters for saving when using DeepSpeed
-                    with deepspeed.zero.GatheredParameters(trainer.model.ue_head.parameters()):
+                    with torch.no_grad(), deepspeed.zero.GatheredParameters(trainer.model.ue_head.parameters(), modifier_rank=0):
                         if trainer.is_world_process_zero():
                             trainer.model.ue_head.save(save_path)
                             log.info(f"Saved to: {save_path}")
