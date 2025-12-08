@@ -36,7 +36,7 @@ class OpenAIChat:
 
         self.base_url = base_url
 
-    def ask(self, message: str) -> str:
+    def ask(self, message: str, **kwargs) -> str:
         cache_settings = dc.DEFAULT_SETTINGS.copy()
         cache_settings["eviction_policy"] = "none"
         cache_settings["size_limit"] = int(1e12)
