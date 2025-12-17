@@ -179,7 +179,7 @@ def main(config):
             return len(inst['claims']) > 0
 
         tokenized_data = tokenized_data.filter(dataset_filter)
-        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
+        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, claim_num_upper_bound=config.claim_num_upper_bound if config.claim_num_upper_bound is not None else -1, mlm=False)
     elif model.ue_head.model_type == "token":
         data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
     

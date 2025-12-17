@@ -13,13 +13,20 @@ def main(args):
         # Load from local file
         if args.dataset_path.endswith('.csv'):
             df = pd.read_csv(args.dataset_path)
-        else:
+            df_new = df[[args.question_col, args.answer_col]]   
+            dataset = Dataset.from_pandas(df_new)
+        elif args.dataset_path.endswith('.json') or args.dataset_path.endswith('.jsonl'):
             df = pd.read_json(args.dataset_path, lines=True)
-        df_new = df[[args.question_col, args.answer_col]]   
-        dataset = Dataset.from_pandas(df_new)
+            df_new = df[[args.question_col, args.answer_col]]   
+            dataset = Dataset.from_pandas(df_new)
+        else:
+            dataset = load_dataset(args.dataset_path)[args.dataset_split]
     elif isinstance(args.dataset_path, tuple):
-        # Load from HuggingFace dataset
-        dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
+        if args.dataset_path[0] == 'local':
+            dataset = load_from_disk(args.dataset_path[1])[args.dataset_split]
+        else:
+            # Load from HuggingFace dataset
+            dataset = load_dataset(*args.dataset_path, cache_dir=args.hf_cache)[args.dataset_split]
     else:
         raise ValueError("dataset_path must be either a file path (str) or a HuggingFace dataset tuple")
     
@@ -34,7 +41,7 @@ def main(args):
     # Format questions and extract answers
     questions, answers = [], []
     for inst in dataset:
-        if 'strategy_qa' in str(args.dataset_path):
+        if 'strategy-qa' in str(args.dataset_path):
             questions.append(prompt_template.format(q=inst[args.question_col]))
             def parse_strategy_qa_answer(example):
                 answer_str = ""
@@ -57,10 +64,11 @@ def main(args):
                 return ret
             
             def parse_science_qa_answer(example):
-                answer_str = f"The answer is {example[args.answer_col]}. Reasoning: {example['solution']}"
+                LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                answer_str = f"The answer is {LETTERS[example[args.answer_col]]}. Reasoning: {example['solution']}"
                 return answer_str
             
-            questions.append(parse_science_qa_question(inst))
+            questions.append(prompt_template.format(q=parse_science_qa_question(inst)))
             answers.append(parse_science_qa_answer(inst))
         else:   
             questions.append(prompt_template.format(q=inst[args.question_col]))

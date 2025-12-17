@@ -1,0 +1,22 @@
+You are an expert in fact checking. You are presented with a question, and a student's (incomplete) answer so far.
+Your task is to determine wether the **last sentence** in the student's answer contains any factual errors, using your knowledge and the context provided by the earlier sentences in the answer.
+
+Instruction:
+1. Breakdown the last sentence into atomic claims (small, verifiable statements).
+2. Verify the factual accuracy of each atomic claim individually.
+3. If **any** of the atomic claims are factually incorrect, the last sentence contains a factual error. In this case, output **0**.
+4. If **all** atomic claims are factually accurate or or if there are no verifiable atomic claims, output **1**.
+5. Only unambiguously verifiable errors should be considered as factual errors.
+
+Response Format:
+[REASON]: If there is a factual error, briefly explain why **in one line**; otherwise leave it empty.
+[RESULT]: 0 or 1
+
+QUESTION:
+{question}
+
+STUDENT'S ANSWER SO FAR:
+{steps}
+
+THE LATEST SENTENCE TO FACT-CHECK:
+{latest_step}

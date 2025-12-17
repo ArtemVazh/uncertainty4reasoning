@@ -77,6 +77,8 @@ python train_luh/run_train_luh.py \
   +hf_save_path=rediska0123/uhead_Qwen3-1.7B_gsm8k
 ```
 
+Claim sampling: `+claim_num_upper_bound=N` limits how many claims are randomly sampled per example during training (no replacement). If `N <= 0` or omitted, all claims are used. See `clariden_scripts/train_uh_natural_hs_2500_8_true_random_5e.sh` for an example (sets `CLAIM_NUM_UPPER_BOUND` and passes `+claim_num_upper_bound=...`). The sampling happens in `train_luh/run_train_luh.py` inside `DataCollatorForLanguageModelingWithUncertaintyClaim` where it uses `random.sample` to take `min(N, len(claims))`.
+
 ## 4. Test UHead
 
 Example to test your UHead along with other UE baselines (MaxProb, Perplexity, Entropy, CCP). Replace `WANDB_PROJECT` with your wandb project.

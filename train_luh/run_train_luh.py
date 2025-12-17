@@ -321,8 +321,9 @@ class DataCollatorForLanguageModelingWithUncertainty(DataCollatorForLanguageMode
 
 
 class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguageModeling):
-    def __init__(self, tokenizer, *args, **kwargs):
+    def __init__(self, tokenizer, claim_num_upper_bound=-1, *args, **kwargs):
         self._tokenizer = tokenizer
+        self.claim_num_upper_bound = claim_num_upper_bound
         super().__init__(tokenizer, *args, **kwargs)
 
     def _adjust_claim_positions(self, context_length, input_ids, claim_obj):
@@ -358,10 +359,20 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
 
         # Construct claim tensors
         all_claim_tensors = []
+        all_verified = []
         for i in range(len(batch["input_ids"])):
             instance_claims = []
             full_len = batch["input_ids"].shape[1]
-            for claim in examples[i]["claims"]:
+            if self.claim_num_upper_bound > 0:
+                rand_idx = random.sample(range(len(examples[i]["claims"])), min(self.claim_num_upper_bound, len(examples[i]["claims"])))
+                rand_idx.sort()
+                claims = [examples[i]["claims"][j] for j in rand_idx]
+                verified = [examples[i]["verified"][j] for j in rand_idx]
+            else:
+                claims = examples[i]["claims"]
+                verified = examples[i]["verified"]
+            all_verified.append(verified)
+            for claim in claims:
                 mask = torch.zeros(batch["input_ids"][i].shape, dtype=int)
                 claim_token_positions = self._adjust_claim_positions(batch["context_lengths"][i], batch["input_ids"][i],
                                                                      claim)
@@ -378,8 +389,8 @@ class DataCollatorForLanguageModelingWithUncertaintyClaim(DataCollatorForLanguag
 
         # Construct labels
         all_labels = []
-        for i in range(len(examples)):
-            uncertainty_labels = examples[i]["verified"]
+        for i in range(len(all_verified)):
+            uncertainty_labels = all_verified[i]
             all_labels.append([e if not np.isnan(e) else -100 for e in uncertainty_labels])
 
         batch["verified"] = all_labels
@@ -788,7 +799,7 @@ def main(config):
         #     for split, ds in tokenized_data.items()
         # }
         tokenized_data = tokenized_data.filter(dataset_filter)
-        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, mlm=False)
+        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, claim_num_upper_bound=config.claim_num_upper_bound if config.claim_num_upper_bound is not None else -1, mlm=False)
     elif model.ue_head.model_type == "token":
         data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
 

@@ -1,12 +1,22 @@
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from parse import parse
+import numpy as np
 import json
+from tqdm import tqdm
+from typing import Dict, List
+from openai import OpenAI
+import os
+import logging
+import diskcache as dc
+import threading
 
-from lm_polygraph.generation_metrics.openai_fact_check import *
-from lm_polygraph.stat_calculators.extract_claims import *
+from lm_polygraph.generation_metrics.generation_metric import GenerationMetric
+from lm_polygraph.utils.openai_chat import OpenAIChat
+from lm_polygraph.stat_calculators.extract_claims import Claim
 from synthetic_dataset_generation.utils.deepseek_chat import DeepSeekChat
 
+log = logging.getLogger()
 
 VERSION = 'correctness_redundancy'
 
@@ -92,7 +102,7 @@ Output a single Python list where each element is:
 
 Important:
 - Output only the list, nothing else.
-- The list must have the same length as the number of steps.
+- The list must have the same length as the number of steps (in this case, list length must be {list_length}).
 
 PROBLEM:
 {problem}
@@ -108,19 +118,196 @@ OUTPUT LIST:
 }
 
 
+PHI4_SYSTEM_PROMPT = "You are Phi, a language model trained by Microsoft to help users. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracing, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> {Thought section} </think> {Solution section}. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion. Now, try to solve the following question through the above guidelines:"
+
+class Phi4ReasoningChat:
+    """
+    Allows for the implementation of a singleton class to chat with Phi-4 model for dataset marking.
+    """
+    
+    
+    def __init__(
+        self,
+        model: str = "microsoft/Phi-4-reasoning",
+        base_url: str = "http://localhost:8000/v1",
+        cache_path: str = os.path.expanduser("~") + "/.cache",
+    ):
+        """
+        Parameters
+        ----------
+        model: str
+            the model to use in OpenAI to chat.
+        base_url: str
+            the base url to access the local model.
+        """
+        self.cache_path = os.path.join(cache_path, "openai_chat_cache.diskcache")
+        if not os.path.exists(cache_path):
+            os.makedirs(cache_path)
+
+        self.base_url = base_url
+        self.model = model
+        self.client = OpenAI(base_url=self.base_url, api_key='EMPTY')
+
+        # Initialize cache with proper settings
+        cache_settings = dc.DEFAULT_SETTINGS.copy()
+        cache_settings["eviction_policy"] = "none"
+        cache_settings["size_limit"] = int(1e12)
+        cache_settings["cull_limit"] = 0
+        self.cache = dc.Cache(self.cache_path, **cache_settings)
+        self._lock = threading.Lock()
+
+    def ask(self, message: str, **kwargs) -> str:
+
+        reply, reasoning_content = self.cache.get((self.model, message), ('', ''))
+        if reply == '' and reasoning_content == '':
+            print(f"Sending request to {self.model}")
+            messages = [
+                {"role": "system", "content": PHI4_SYSTEM_PROMPT},
+                {"role": "user", "content": message},
+            ]
+            chat = self._send_request(messages)
+            if chat is None:
+                reply, reasoning_content = '', ''
+            else:
+                reasoning_content = chat.choices[0].message.reasoning_content
+                reply = chat.choices[0].message.content
+
+            with self._lock:
+                self.cache[(self.model, message)] = (reply, reasoning_content)
+        else:
+            print("Loaded from cache")
+
+        if "please provide" in reply.lower():
+            return ""
+        if "to assist you" in reply.lower():
+            return ""
+        if "as an ai language model" in reply.lower():
+            return ""
+
+        return reply, reasoning_content
+
+    def _send_request(self, messages):
+        try:
+            response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=messages,
+                            max_tokens=28000,
+                            temperature=0.8,
+                            top_p=0.95,
+                            extra_body={"top_k": 50},
+                        )
+        except Exception as e:
+            log.info(
+                f"Request to OpenAI failed with exception: {e}."
+            )
+            return None
+
+        return response
+
+
+
+class Qwen3Chat:
+    """
+    Allows for the implementation of a singleton class to chat with OpenAI model for dataset marking.
+    """
+
+    def __init__(
+        self,
+        model: str = "Qwen/Qwen3-8B",
+        base_url: str = "http://localhost:8000/v1",
+        cache_path: str = os.path.expanduser("~") + "/.cache",
+        enable_thinking: bool = True,
+    ):
+        """
+        Parameters
+        ----------
+        model: str
+            the model to use in OpenAI to chat.
+        base_url: str
+            the base url to access the local model.
+        """
+        self.cache_path = os.path.join(cache_path, "openai_chat_cache.diskcache")
+        if not os.path.exists(cache_path):
+            os.makedirs(cache_path)
+
+        self.base_url = base_url
+        self.model = model
+        self.enable_thinking = enable_thinking
+        self.client = OpenAI(base_url=self.base_url, api_key='EMPTY')
+
+        # Initialize cache with proper settings
+        cache_settings = dc.DEFAULT_SETTINGS.copy()
+        cache_settings["eviction_policy"] = "none"
+        cache_settings["size_limit"] = int(1e12)
+        cache_settings["cull_limit"] = 0
+        self.cache = dc.Cache(self.cache_path, **cache_settings)
+        self._lock = threading.Lock()
+
+    def ask(self, message: str, **kwargs) -> str:
+
+        reply, reasoning_content = self.cache.get((self.model, message), ('', ''))
+        if reply == '' and reasoning_content == '':
+            print(f"Sending request to {self.model}")
+            messages = [
+                {"role": "user", "content": message},
+            ]
+            chat = self._send_request(messages, enable_thinking=self.enable_thinking)
+            if chat is None:
+                reply, reasoning_content = '', ''
+            else:
+                reasoning_content = chat.choices[0].message.reasoning_content
+                reply = chat.choices[0].message.content
+                if reply is None:
+                    reply, reasoning_content = '', ''
+
+            with self._lock:
+                self.cache[(self.model, message)] = (reply, reasoning_content)
+        else:
+            print("Loaded from cache")
+
+        if "please provide" in reply.lower():
+            return ""
+        if "to assist you" in reply.lower():
+            return ""
+        if "as an ai language model" in reply.lower():
+            return ""
+
+        return reply, reasoning_content
+
+    def _send_request(self, messages, enable_thinking=True):
+
+        try:
+            response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=messages,
+                            max_tokens=32768,
+                            temperature=0.6,
+                            top_p=0.95,
+                            extra_body={"enable_thinking": enable_thinking, "top_k": 20},
+                        )
+        except Exception as e:
+            log.info(
+                f"Request to OpenAI failed with exception: {e}."
+            )
+            return None
+        return response
+
+
 
 class StepFactCheck(GenerationMetric):
     def __init__(
             self,
             prompt_file: str,
             cache_path: str = "~/.cache",
-            model: str = 'deepseek-reasoner',
-            api_key: str | None = None,
+            model: str = None,
+            api_key: str = None,
             progress_bar: bool = True,
             n_threads: int = 1,
             wait_times: tuple = (5, 10, 30, 60, 120),
             version: str = VERSION,
             label_type: str = 'correctness',
+            base_url: str = None,
+            debug: bool = False,
     ):
         super().__init__(["input_texts", "claims"], "claim")
 
@@ -132,10 +319,20 @@ class StepFactCheck(GenerationMetric):
         else:
             self.json_output = False
 
-        if 'deepseek' in model:
-            self.chat = DeepSeekChat(cache_path,  model=model, api_key=api_key, wait_times=wait_times)
+        if base_url is not None and 'localhost' in base_url:
+            print(f"Using Local {model}")
+            if 'phi' in model.lower():
+                self.chat = Phi4ReasoningChat(model=model, base_url=base_url, cache_path=cache_path)
+            elif 'qwen' in model.lower():
+                self.chat = Qwen3Chat(model=model, base_url=base_url, cache_path=cache_path, enable_thinking=True)
+            else:
+                raise ValueError(f"Model {model} not supported")
         else:
-            self.chat = OpenAIChat(model, cache_path=cache_path)
+            print(f"Using Remote {model}")
+            if 'deepseek' in model:
+                self.chat = DeepSeekChat(cache_path,  model=model, api_key=api_key, wait_times=wait_times)
+            else:
+                self.chat = OpenAIChat(model, cache_path=cache_path)
 
         self.label_type = label_type
         # use this for OpenAI
@@ -144,6 +341,7 @@ class StepFactCheck(GenerationMetric):
         self.progress_bar = progress_bar
         self.n_threads = n_threads
         self.version = version
+        self.debug = debug
 
     def __str__(self):
         return "StepFactCheck" + "_" + self.label_type
@@ -167,7 +365,7 @@ class StepFactCheck(GenerationMetric):
         if self.json_output:
             return PROMPT2_TEMPLATE[self.version].format(problem=problem, steps=steps, reply=reply, list_length=len(steps), list_length_1=len(steps) - 1)
         else:
-            return PROMPT2_TEMPLATE[self.version].format(problem=problem, steps=steps, reply=reply)
+            return PROMPT2_TEMPLATE[self.version].format(problem=problem, steps=steps, reply=reply, list_length=len(steps))
 
     def parse_reply(self, reply: str) -> list[int] | None:
         if 'all steps are correct' in reply.lower():
@@ -187,9 +385,25 @@ class StepFactCheck(GenerationMetric):
     def _score_single(self, args: tuple[list, str, str]) -> list:
         claims, input_text, answer = args
         q1 = self.prompt1(input_text, claims, answer)
-        reply = self.chat.ask(q1, json_output=False)
+        response_tuple = self.chat.ask(q1, json_output=False)
+        if isinstance(response_tuple, tuple):
+            reply, reasoning_content = response_tuple
+        else:
+            reply, reasoning_content = response_tuple, ""
+        if self.debug:
+            print(q1)
+            print("=================")
+            print(f"Reasoning content Step 1: {reasoning_content}")
         q2 = self.prompt2(input_text, claims, answer, reply)
-        reply = self.chat.ask(q2, json_output=self.json_output)
+        response_tuple = self.chat.ask(q2, json_output=self.json_output)
+        if isinstance(response_tuple, tuple):
+            reply, reasoning_content = response_tuple
+        else:
+            reply, reasoning_content = response_tuple, ""
+        if self.debug:
+            print(q2)
+            print("=================")
+            print(f"Reasoning content Step 2: {reasoning_content}")
         if self.json_output:
             try:
                 json_reply = json.loads(reply)
@@ -243,11 +457,17 @@ class StepFactCheck(GenerationMetric):
             for input_text, claims, answer in zip(input_texts, stats["claims"], target_texts)
         ]
 
-        with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
-            futures = [executor.submit(self._score_single, item) for item in all_inputs]
+        print(f"Using {self.n_threads} threads")
+        if self.n_threads == 1:
             claim_labels = []
-            for future in tqdm(futures, desc=f"Verifying claims ({self.label_type})", disable=not self.progress_bar):
-                claim_labels.append(future.result())
+            for item in tqdm(all_inputs, desc=f"Verifying claims ({self.label_type})", total=len(all_inputs), disable=not self.progress_bar):
+                claim_labels.append(self._score_single(item))
+        else:
+            with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
+                futures = [executor.submit(self._score_single, item) for item in all_inputs]
+                claim_labels = []
+                for future in tqdm(futures, desc=f"Verifying claims ({self.label_type})", disable=not self.progress_bar):
+                    claim_labels.append(future.result())
 
         return claim_labels
 
