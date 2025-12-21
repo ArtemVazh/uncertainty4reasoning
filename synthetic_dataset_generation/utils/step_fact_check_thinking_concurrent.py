@@ -125,7 +125,6 @@ class StepFactCheckThinking(GenerationMetric):
             target_texts: List[str],
             output_path: str,
     ) -> list:
-        assert output_path is not None and output_path.endswith(".csv")
 
         input_texts = stats["input_texts"]
 
@@ -170,19 +169,20 @@ class StepFactCheckThinking(GenerationMetric):
         print(len(verdict_reasons))
         print(len(claim_sentences))
 
-        new_df = {
-            "input_text": input_texts,
-            "claims": claim_sentences,
-            "claim_labels": claim_labels,
-            "verdict_reasons": verdict_reasons,
-        }
+        if output_path is not None and len(input_texts) == len(claim_labels) == len(verdict_reasons) == len(claim_sentences):
+            new_df = {
+                "input_text": input_texts,
+                "claims": claim_sentences,
+                "claim_labels": claim_labels,
+                "verdict_reasons": verdict_reasons,
+            }
 
-        if "answers" in stats.keys():
-            new_df["answer"] = target_texts
-            print(len(target_texts))
-        df = pd.DataFrame(new_df)
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        df.to_csv(output_path, index=False)
+            if "answers" in stats.keys():
+                new_df["answer"] = target_texts
+                print(len(target_texts))
+            df = pd.DataFrame(new_df)
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            df.to_csv(output_path, index=False)
 
         return claim_labels
 

@@ -148,14 +148,14 @@ class StepsExtractorThinking(StatCalculator):
                 prev_token_i = token_i + 1
             text_i += 1
 
-        # tail
-        tail = text[prev_text_i:]
-        if self.filter_claim_texts(tail):
-            claims.append(Claim(
-                claim_text=tail.strip(),
-                sentence=tail,
-                aligned_token_ids=list(range(prev_token_i, token_i + 1))
-            ))
+        # remove tail incomplete sentences
+        # tail = text[prev_text_i:]
+        # if self.filter_claim_texts(tail):
+        #     claims.append(Claim(
+        #         claim_text=tail.strip(),
+        #         sentence=tail,
+        #         aligned_token_ids=list(range(prev_token_i, token_i + 1))
+        #     ))
 
         # ---------- POST-PROCESS: merge short claims (< min_chars_per_step characters) into the previous ----------
         merged: list[Claim] = []
@@ -208,5 +208,5 @@ def load_stat_calculator(config, builder):
         thinking_prefix=getattr(config, "thinking_prefix", "<think>"),
         thinking_suffix=getattr(config, "thinking_suffix", "</think>"),
         progress_bar=getattr(config, "progress_bar", False),
-        min_chars_per_step=getattr(config, "min_chars_per_step", 5),
+        min_chars_per_step=getattr(config, "min_chars_per_step", 20),
     )

@@ -106,6 +106,13 @@ def main(args):
         )
         log.info("Done with loading eval data.")
 
+        if getattr(args, "dataset_partition_num", 1) > 1:
+            dataset_len = len(dataset)
+            partition_num = getattr(args, "dataset_partition_num", 1)
+            partition_idx = getattr(args, "dataset_partition_idx", 0)
+            partition_size = dataset_len // partition_num + (1 if dataset_len % partition_num != 0 else 0)
+            dataset = dataset.select(range(partition_idx * partition_size, min((partition_idx + 1) * partition_size, dataset_len)))
+
         log.info("=" * 100)
         log.info("Initializing UE estimators...")
         estimators = []
@@ -260,18 +267,18 @@ def get_generation_metrics(args):
     generation_metrics = getattr(args, "generation_metrics", None)
     if not generation_metrics:
         result = [
-            RougeMetric("rouge1"),
-            RougeMetric("rouge2"),
-            RougeMetric("rougeL"),
-            BLEUMetric(),
-            BertScoreMetric("rh"),
-            SbertMetric(),
-            AccuracyMetric(
-                target_ignore_regex=getattr(args, "target_ignore_regex", None),
-                output_ignore_regex=getattr(args, "output_ignore_regex", None),
-                normalize=getattr(args, "normalize", False),
-            ),
-            AlignScore(target_is_claims=False if args.task == "ats" else True),
+            # RougeMetric("rouge1"),
+            # RougeMetric("rouge2"),
+            # RougeMetric("rougeL"),
+            # BLEUMetric(),
+            # BertScoreMetric("rh"),
+            # SbertMetric(),
+            # AccuracyMetric(
+            #     target_ignore_regex=getattr(args, "target_ignore_regex", None),
+            #     output_ignore_regex=getattr(args, "output_ignore_regex", None),
+            #     normalize=getattr(args, "normalize", False),
+            # ),
+            # AlignScore(target_is_claims=False if args.task == "ats" else True),
         ]
         # if getattr(args.model, "type", "Whitebox") != "Blackbox":
         #     if getattr(args, "use_claim_ue", False):
