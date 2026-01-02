@@ -27,7 +27,7 @@ def process_attentions(attentions_all, attention_mask, is_training, stack_layers
         ]
     else:
         attn_inp = [
-            tuple(
+            stack_fn(
                 _process_attn_nans(attentions_all[0][l][:, :, i:i + 1, :i + 1])
                 for l in range(len(attentions_all[0]))
             )
