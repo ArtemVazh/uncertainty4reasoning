@@ -1,0 +1,67 @@
+hydra:
+  run:
+    dir: ${output_dir}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+seed: 42
+uhead_device: cuda:2
+
+model:
+  pretrained_model_name_or_path: Qwen/Qwen3-1.7B
+  torch_dtype: float16
+  model_max_length: 2400
+
+ue_layer:
+  path: ''
+  pos_weight: 3
+  head_cfg:
+    head_type: step_reasoning
+    feature_extractor:
+      - name: luh.feature_extractors.basic_hidden_states
+        layer_nums: -1
+    uncertainty_head:
+      head_dim: 768
+      n_layers: 2
+      n_heads: 8
+      dropout: 0.1
+      mask_future_tokens: true
+
+dataset:
+  path: hf:rediska0123/train_gsm8k_Qwen3-1.7B
+  prompt_path: configs/qwen3_prompt.txt
+  num_instances: 0
+  test_size: 0.1
+  validation: test
+  label_key_claim: verified
+  label_key_token: uncertainty_labels
+  # subset: 100
+  # max_input_length: 1024
+
+additional_test_datasets: {}
+
+vllm:
+  model_path: Qwen/Qwen3-1.7B
+  hs_generator_kwargs:
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.85
+    max_model_len: 4096
+
+training_arguments:
+  num_train_epochs: 10
+  learning_rate: 0.0001
+  warmup_ratio: 0.05
+  weight_decay: 0.1
+  gradient_accumulation_steps: 16
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  max_grad_norm: 1.0
+  early_stopping_patience: 3
+
+do_train: true
+do_eval: false
+do_save_checkpoints: true
+do_save_final_model: true
+
+report_to: wandb
+
+wandb:
+  mode: online        # or offline

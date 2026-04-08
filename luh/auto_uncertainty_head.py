@@ -1,6 +1,7 @@
 from .heads.saplma_head import SaplmaHead
 from .heads.uncertainty_head import UncertaintyHead
 from .heads.uncertainty_head_claim import UncertaintyHeadClaim
+from .heads.uncertainty_head_steps_reasoning import UncertaintyHeadStepReasoning
 from .heads.linear_head import LinearHead
 from .heads.linear_head_claim import LinearHeadClaim
 from .utils import load_feature_extractor
@@ -17,6 +18,7 @@ class AutoUncertaintyHead:
         "saplma": SaplmaHead,
         DEFAULT_MODEL_TYPE: UncertaintyHead,
         "claim": UncertaintyHeadClaim,
+        "step_reasoning": UncertaintyHeadStepReasoning,
         "linear": LinearHead,
         "linear_claim": LinearHeadClaim,
     }
