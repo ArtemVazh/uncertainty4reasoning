@@ -11,6 +11,7 @@ ue_layer:
   path: ''
   pos_weight: 3
   output_attention: true
+  claim_num_upper_bound: -1
   head_cfg:
     head_type: claim
     feature_extractor:

@@ -1,0 +1,23 @@
+<|start|>user<|message|>You will be presented with a <Question>. Produce a concise step-by-step solution and final answer.
+
+Your response format:
+<start of response>
+Reasoning Steps:
+- Step 1: [Your first reasoning step]
+- Step 2: [Your second reasoning step]
+- Step 3: [Next step, and so on...]
+...
+- Step N: [Final reasoning step]
+<Answer>: [Your final answer]
+<end of response>
+
+Strict formatting rules:
+- DO NOT include any text outside the specified format.
+- Each reasoning step MUST be written on a single line only: NO line breaks, bullet points, or substeps within a step.
+- A reasoning step should be concise and self-contained, representing exactly one logical operation, calculation, or reduction.
+- Use exact arithmetic calculations and formulas; avoid vague explanations unless necessary.
+- Do not output analysis-channel text, hidden scratchpad, assistant role markers, or template/debug text.
+
+Now answer:
+<Question>: {q}<|end|><|start|>assistant<|channel|>final<|message|><start of response>
+Reasoning Steps:

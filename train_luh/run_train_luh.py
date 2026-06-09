@@ -137,6 +137,9 @@ def load_model(config):
             ue_pos_weight=config.ue_layer.pos_weight,
             output_attention=uq_head.output_attentions,
         )
+    else:
+        # If no ue_layer is specified (path is empty), use base_model directly
+        model = base_model
 
     # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
     if hasattr(base_model, 'dtype'):
@@ -799,7 +802,7 @@ def main(config):
         #     for split, ds in tokenized_data.items()
         # }
         tokenized_data = tokenized_data.filter(dataset_filter)
-        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, claim_num_upper_bound=config.claim_num_upper_bound if config.claim_num_upper_bound is not None else -1, mlm=False)
+        data_collator = DataCollatorForLanguageModelingWithUncertaintyClaim(tokenizer, claim_num_upper_bound=config.ue_layer.claim_num_upper_bound if config.ue_layer.claim_num_upper_bound is not None else -1, mlm=False)
     elif model.ue_head.model_type == "token":
         data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
 

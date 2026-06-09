@@ -159,10 +159,10 @@ class DeepSeekChat:
             with self._lock:
                 self.cache[(self.model, message)] = reply
 
-        if any(x in reply.lower() for x in ["please provide", "to assist you", "as an ai language model"]):
+        if reply and any(x in reply.lower() for x in ["please provide", "to assist you", "as an ai language model"]):
             return ""
 
-        return reply
+        return reply if reply else ""
 
     def _send_request(self, messages, json_output=False):
         chat_args = {
@@ -172,11 +172,13 @@ class DeepSeekChat:
         }
         if json_output:
             chat_args['response_format'] = {'type': 'json_object'}
+        # print(f"Sending request: model={self.model}, base_url={self.api_base}")
         for i in range(len(self.wait_times)):
             try:
                 return self.client.chat.completions.create(**chat_args)
             except Exception as e:
                 sleep_time = self.wait_times[i]
+                print(f"Request failed with exception: {e}. Retry #{i}/{len(self.wait_times)} after {sleep_time} seconds.")
                 log.info(
                     f"Request failed with exception: {e}. Retry #{i}/5 after {sleep_time} seconds."
                 )

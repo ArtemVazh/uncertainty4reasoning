@@ -200,3 +200,10 @@ CLAUDE.md
 online_bon_results/
 bon_results/
 online_bestofn/old_code
+
+# Local experiment artifacts
+*.sh
+*log
+cache/
+ao/
+triton/

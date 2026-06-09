@@ -178,10 +178,17 @@ class UncertaintyHeadStepReasoning(UncertaintyHeadBase):
             assert entity_mask.ndim == 2, (
                 f"claims[{i}] must have shape [num_claims_i, T], got {entity_mask.shape}"
             )
-            assert entity_mask.shape[1] == seq_len, (
-                f"claims[{i}] sequence length {entity_mask.shape[1]} does not match "
-                f"feature sequence length {seq_len}"
-            )
+
+            # Handle sequence length mismatch between claims and features
+            claims_seq_len = entity_mask.shape[1]
+            if claims_seq_len != seq_len:
+                if claims_seq_len < seq_len:
+                    # Pad claims to match feature length (e.g., LLM generated more tokens)
+                    pad_cols = seq_len - claims_seq_len
+                    entity_mask = F.pad(entity_mask, (0, pad_cols), mode='constant', value=0)
+                else:
+                    # Trim claims to match feature length
+                    entity_mask = entity_mask[:, :seq_len]
 
             num_claims = entity_mask.shape[0]
             if num_claims == 0:

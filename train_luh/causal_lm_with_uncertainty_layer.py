@@ -1,4 +1,4 @@
-from transformers.modeling_utils import PreTrainedModel, PretrainedConfig
+from transformers import PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutput
 
 import torch

@@ -14,7 +14,7 @@ import threading
 from lm_polygraph.generation_metrics.generation_metric import GenerationMetric
 from lm_polygraph.utils.openai_chat import OpenAIChat
 from lm_polygraph.stat_calculators.extract_claims import Claim
-from synthetic_dataset_generation.utils.deepseek_chat import DeepSeekChat
+from synthetic_dataset_generation.utils.chat import DeepSeekChat
 
 log = logging.getLogger()
 
@@ -330,7 +330,7 @@ class StepFactCheck(GenerationMetric):
         else:
             print(f"Using Remote {model}")
             if 'deepseek' in model:
-                self.chat = DeepSeekChat(cache_path,  model=model, api_key=api_key, wait_times=wait_times)
+                self.chat = DeepSeekChat(cache_path=cache_path, model=model, api_key=api_key, api_base=base_url, wait_times=wait_times)
             else:
                 self.chat = OpenAIChat(model, cache_path=cache_path)
 
@@ -436,7 +436,8 @@ class StepFactCheck(GenerationMetric):
         
         return [
             (
-                np.nan if len(claims[i].aligned_token_ids) == 0 or np.isnan(claim_labels[i]) else
+                np.nan if (len(claims[i].aligned_token_ids) == 0 or
+                          (isinstance(claim_labels[i], (int, float)) and np.isnan(claim_labels[i]))) else
                 1 if claim_labels[i] == 0 else
                 0
             ) for i in range(len(claims))

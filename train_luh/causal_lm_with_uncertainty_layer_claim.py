@@ -1,4 +1,4 @@
-from transformers.modeling_utils import PreTrainedModel, PretrainedConfig
+from transformers import PreTrainedModel, PretrainedConfig
 
 import torch
 import logging
@@ -99,5 +99,12 @@ class CausalLMWithUncertaintyLayerClaim(PreTrainedModel):
         )
 
 
-def gradient_checkpointing_enable(self, *args, **kwargs):
-    return self.base_model.gradient_checkpointing_enable(*args, **kwargs)
+    def gradient_checkpointing_enable(self, *args, **kwargs):
+        """Enable gradient checkpointing for the base model."""
+        return self.orig_base_model.gradient_checkpointing_enable(*args, **kwargs)
+
+
+    # Support for gradient checkpointing - required by Transformers
+    _gradient_checkpointing_allowlist = [
+        "orig_base_model",  # Allow gradient checkpointing on the base model
+    ]

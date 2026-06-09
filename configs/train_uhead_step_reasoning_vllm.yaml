@@ -9,6 +9,7 @@ model:
   pretrained_model_name_or_path: Qwen/Qwen3-1.7B
   torch_dtype: float16
   model_max_length: 2400
+  device_map: auto
 
 ue_layer:
   path: ''

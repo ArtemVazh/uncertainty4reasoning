@@ -111,11 +111,12 @@ def main(args):
         stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
         # raise ValueError(f"Dataset path {args.dataset_path} not supported")
 
-    api_key = open(args.api_key_file, 'r').read()
+    api_key = open(args.api_key_file, 'r').read().strip()
     fact_checker_correctness = StepFactCheck(
         model=args.anno_model,
         prompt_file=args.prompt_file,
         api_key=api_key,
+        base_url=args.api_base,
         n_threads=args.n_threads,
         cache_path=args.api_cache if args.api_cache is not None else args.hf_cache,
         label_type="correctness",
@@ -124,6 +125,7 @@ def main(args):
         model=args.anno_model,
         prompt_file=args.prompt_file,
         api_key=api_key,
+        base_url=args.api_base,
         n_threads=args.n_threads,
         cache_path=args.api_cache if args.api_cache is not None else args.hf_cache,
         label_type="informativeness",
@@ -179,7 +181,9 @@ if __name__ == '__main__':
     parser.add_argument("--save-path", type=str, required=True, help="Path to save the annotated dataset.")
     parser.add_argument("--hf-cache", type=str, default=None, help="Cache directory for HuggingFace models.")
     parser.add_argument("--api-key-file", type=str, default="configs/deepseek_api_key.txt",
-                        help="Path to file containing OpenAI API key.")
+                        help="Path to file containing API key.")
+    parser.add_argument("--api-base", type=str, default=None,
+                        help="API base URL (e.g., https://openrouter.ai/api/v1).")
     parser.add_argument("--anno-model", type=str, default="deepseek-reasoner")
     parser.add_argument("--hf-save-path", type=str, default=None, help="HuggingFace Hub path to push dataset to.")
     parser.add_argument("--n-threads", type=int, default=1, help="Number of threads for fact checking.")

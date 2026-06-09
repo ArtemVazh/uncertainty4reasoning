@@ -1,3 +1,6 @@
+import os
+
+os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 import torch
 import argparse
 import numpy as np
@@ -22,6 +25,19 @@ from itertools import chain
 from tqdm import tqdm
 
 GPU_NUM = torch.cuda.device_count()
+
+
+def get_stop_strings(tokenizer):
+    stop_strings = [
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|return|>",
+        "<|end|>",
+    ]
+    for token in (getattr(tokenizer, "eos_token", None), getattr(tokenizer, "pad_token", None)):
+        if token:
+            stop_strings.append(token)
+    return list(dict.fromkeys(stop_strings))
 
 
 def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
@@ -175,6 +191,7 @@ def main(args):
             generation_config=generation_config,
         ))
     else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
         prompts = [prompt.format(q=q) for q in dataset[args.question_col]]
         print(prompts[0])
         # Determine effective temperature for vLLM (same logic as transformers backend)
@@ -191,10 +208,12 @@ def main(args):
             seed=42,
             max_tokens=args.max_new_tokens if args.max_new_tokens > 0 else None,
             repetition_penalty=1.,
-            stop=["<|im_end|>", "<|endoftext|>"],
-            include_stop_str_in_output=True,
+            stop=get_stop_strings(tokenizer),
+            include_stop_str_in_output=False,
         )
         sampling_params.update_from_generation_config(generation_config.to_dict())
+        sampling_params.stop = get_stop_strings(tokenizer)
+        sampling_params.include_stop_str_in_output = False
 
         llm = LLM(
             model=args.model_path,
@@ -224,11 +243,11 @@ def main(args):
         print_stats(dataset, args)
 
     dataset.save_to_disk(args.save_path)
-    from datasets import DatasetDict
-    dataset = DatasetDict({
-            "train": dataset
-        })
-    dataset.push_to_hub("JingweiNi/" + args.save_path.split("/")[-1], private=False)
+    # from datasets import DatasetDict
+    # dataset = DatasetDict({
+    #         "train": dataset
+    #     })
+    # dataset.push_to_hub("JingweiNi/" + args.save_path.split("/")[-1], private=False)
     print("Done.")
 
 

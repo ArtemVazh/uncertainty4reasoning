@@ -1,9 +1,13 @@
+import multiprocessing
+# Set multiprocessing start method to 'spawn' for CUDA compatibility
+# Must be done before importing torch to avoid fork-related CUDA errors
+multiprocessing.set_start_method('spawn', force=True)
+
 import torch
 import traceback
 import argparse
 import numpy as np
 import copy
-import multiprocessing
 from spacy.tokens.doc import defaultdict
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from datasets import load_dataset, load_from_disk, Dataset
@@ -21,7 +25,20 @@ if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARA
     modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none", "colwise", 'rowwise']
 from tqdm import tqdm
 
-GPU_NUM = torch.cuda.device_count()
+# GPU_NUM = torch.cuda.device_count()
+
+
+def get_stop_strings(tokenizer):
+    stop_strings = [
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|return|>",
+        "<|end|>",
+    ]
+    for token in (getattr(tokenizer, "eos_token", None), getattr(tokenizer, "pad_token", None)):
+        if token:
+            stop_strings.append(token)
+    return list(dict.fromkeys(stop_strings))
 
 
 def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
@@ -105,7 +122,8 @@ def parse_args():
     # Dataset
     parser.add_argument('--model-path', type=str, required=True, help='Path to the pretrained model')
     parser.add_argument('--dataset-path', type=str, required=True, help='Path to the dataset')
-    parser.add_argument('--dataset-split', type=str, default=None, help='Dataset split')
+    parser.add_argument('--dataset-split', type=str, default=None, help='Dataset config/split name (e.g., "main")')
+    parser.add_argument('--dataset-subsplit', type=str, default='train', help='Specific split within the config (e.g., "train", "test")')
     parser.add_argument('--question-col', type=str, default="question", help='Column in the dataset with questions')
     parser.add_argument('--answer-col', type=str, default="answer", help='Column in the dataset with answers')
     parser.add_argument('--final-answers', action=argparse.BooleanOptionalAction, default=False, help='Whether dataset contains final answers for each problem')
@@ -167,9 +185,12 @@ def load_prompt(prompt_file):
 def main(args):
     if args.vllm:
         from vllm import LLM, SamplingParams
+        GPU_NUM = torch.cuda.device_count() 
 
     prompt = load_prompt(args.prompt_file)
-    dataset = load_dataset(args.dataset_path)[args.dataset_split]
+    dataset_dict = load_dataset(args.dataset_path, args.dataset_split)
+    # DatasetDict may contain multiple splits (train, test, etc.)
+    dataset = dataset_dict[args.dataset_subsplit]
 
     if 'scienceqa' in str(args.dataset_path):
         def format_scienceqa_question(example):
@@ -203,6 +224,7 @@ def main(args):
             results.extend(generate_replies(inst, prompt, args, model, tokenizer, generation_config))
         dataset = Dataset.from_list(results)
     else:
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
         prompts = [prompt.format(q=q) for q in dataset[args.question_col]]
         print(prompts[0])
         # Determine effective temperature for vLLM (same logic as transformers backend)
@@ -219,10 +241,12 @@ def main(args):
             seed=42,
             max_tokens=args.max_new_tokens,
             repetition_penalty=1.,
-            stop=["<|im_end|>", "<|endoftext|>"],
-            include_stop_str_in_output=True,
+            stop=get_stop_strings(tokenizer),
+            include_stop_str_in_output=False,
         )
         sampling_params.update_from_generation_config(generation_config.to_dict())
+        sampling_params.stop = get_stop_strings(tokenizer)
+        sampling_params.include_stop_str_in_output = False
 
         llm = LLM(
             model=args.model_path,
