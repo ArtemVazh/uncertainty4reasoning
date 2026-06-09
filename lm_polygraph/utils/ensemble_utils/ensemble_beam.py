@@ -8,7 +8,7 @@ from torch.distributions.categorical import Categorical
 from torch import nn
 
 from transformers import GenerationMixin
-from transformers.generation.beam_search import BeamScorer
+from transformers.generation import BeamScorer
 from transformers.generation.logits_process import (
     LogitsProcessorList,
 )

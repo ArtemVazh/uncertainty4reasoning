@@ -20,8 +20,8 @@ from transformers import (
 )
 
 from lm_polygraph.utils.generation_parameters import GenerationParameters
-from lm_polygraph.utils.ensemble_utils.ensemble_generator import EnsembleGenerationMixin
-from lm_polygraph.utils.ensemble_utils.dropout import replace_dropout
+# from lm_polygraph.utils.ensemble_utils.ensemble_generator import EnsembleGenerationMixin
+# from lm_polygraph.utils.ensemble_utils.dropout import replace_dropout
 
 log = logging.getLogger("lm_polygraph")
 
@@ -643,37 +643,37 @@ class WhiteboxModel(Model):
         )
 
 
-def create_ensemble(
-    models: List[WhiteboxModel] = [],
-    mc: bool = False,
-    seed: int = 1,
-    mc_seeds: List[int] = [1],
-    ensembling_mode: str = "pe",
-    dropout_rate: float = 0.1,
-    **kwargs,
-) -> WhiteboxModel:
-    model = models[0]
-    ens = model.model
+# def create_ensemble(
+#     models: List[WhiteboxModel] = [],
+#     mc: bool = False,
+#     seed: int = 1,
+#     mc_seeds: List[int] = [1],
+#     ensembling_mode: str = "pe",
+#     dropout_rate: float = 0.1,
+#     **kwargs,
+# ) -> WhiteboxModel:
+#     model = models[0]
+#     ens = model.model
 
-    ens.__class__ = type(
-        "EnsembleModel", (model.model.__class__, EnsembleGenerationMixin), {}
-    )
+#     ens.__class__ = type(
+#         "EnsembleModel", (model.model.__class__, EnsembleGenerationMixin), {}
+#     )
 
-    if mc:
-        ens.mc = True
-        ens.mc_seeds = mc_seeds
-        ens.base_seed = seed
-        ens.ensembling_mode = ensembling_mode
-        ens.mc_models_num = len(mc_seeds)
-        ens.mc_seeds = mc_seeds
+#     if mc:
+#         ens.mc = True
+#         ens.mc_seeds = mc_seeds
+#         ens.base_seed = seed
+#         ens.ensembling_mode = ensembling_mode
+#         ens.mc_models_num = len(mc_seeds)
+#         ens.mc_seeds = mc_seeds
 
-        replace_dropout(
-            ens.config._name_or_path, ens, p=dropout_rate, share_across_tokens=True
-        )
-        ens.train()
-    else:
-        raise ValueError(
-            "Only Monte-Carlo ensembling is available. Please set the corresponding argument value to True"
-        )
+#         replace_dropout(
+#             ens.config._name_or_path, ens, p=dropout_rate, share_across_tokens=True
+#         )
+#         ens.train()
+#     else:
+#         raise ValueError(
+#             "Only Monte-Carlo ensembling is available. Please set the corresponding argument value to True"
+#         )
 
-    return model
+#     return model
