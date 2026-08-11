@@ -33,10 +33,33 @@ def generate_targets(dataset, reply_tokens_all, key="verified"):
         target = [-100.] * len(reply_tokens)
         for claim, label in zip(claims, verified):
             for t in claim["aligned_token_ids"]:
-                if not np.isnan(label):
+                if is_valid_label(label):
                     target[t] = float(label == 1.0)
         targets.append(target)
     return targets
+
+
+def is_valid_label(label):
+    if label is None:
+        return False
+    try:
+        return not np.isnan(label)
+    except TypeError:
+        return True
+
+
+def assert_rows_have_valid_labels(labels, key="verified"):
+    bad_indices = [
+        idx for idx, row in enumerate(labels)
+        if len(row) == 0 or not any(is_valid_label(label) for label in row)
+    ]
+    if bad_indices:
+        preview = bad_indices[:20]
+        suffix = "..." if len(bad_indices) > len(preview) else ""
+        raise ValueError(
+            f"{key} has {len(bad_indices)} rows without any valid labels: "
+            f"{preview}{suffix}"
+        )
 
 
 def main(args):
@@ -120,6 +143,7 @@ def main(args):
         n_threads=args.n_threads,
         cache_path=args.api_cache if args.api_cache is not None else args.hf_cache,
         label_type="correctness",
+        strict=True,
     )
     fact_checker_informativeness = StepFactCheck(
         model=args.anno_model,
@@ -129,8 +153,10 @@ def main(args):
         n_threads=args.n_threads,
         cache_path=args.api_cache if args.api_cache is not None else args.hf_cache,
         label_type="informativeness",
+        strict=True,
     )
     correctness_labels = fact_checker_correctness(stats, None)
+    assert_rows_have_valid_labels(correctness_labels, key="verified")
     informativeness_labels = fact_checker_informativeness(stats, None)
     print("Done.")
     # print(verified)
@@ -169,8 +195,12 @@ def print_stats(anno_dataset, key="verified"):
         all_ue += d[key]
     print('Total:', len(all_ue), 'steps')
     t, f = all_ue.count(0.0), all_ue.count(1.0)
-    print('{} True: {} steps ({}%)'.format(key, t, round(100 * t / (t + f), 2)))
-    print('{} False: {} steps ({}%)'.format(key, f, round(100 * f / (t + f), 2)))
+    total_valid = t + f
+    if total_valid == 0:
+        print(f'{key}: no valid labels')
+        return
+    print('{} True: {} steps ({}%)'.format(key, t, round(100 * t / total_valid, 2)))
+    print('{} False: {} steps ({}%)'.format(key, f, round(100 * f / total_valid, 2)))
 
 
 if __name__ == '__main__':

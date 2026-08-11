@@ -39,6 +39,23 @@ def get_stop_strings(tokenizer):
             stop_strings.append(token)
     return list(dict.fromkeys(stop_strings))
 
+def clean_assistant_channel_artifacts(text):
+    if "assistantfinal" in text:
+        text = text.rsplit("assistantfinal", 1)[-1].lstrip()
+    for marker in ("assistantanalysis", "assistantcommentary"):
+        if marker in text:
+            text = text.split(marker, 1)[0].rstrip()
+    end_marker = "<end of response>"
+    if end_marker in text:
+        text = text[:text.index(end_marker) + len(end_marker)]
+    for prefix in ("<start of response>\nReasoning Steps:", "Reasoning Steps:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].lstrip()
+    return text.strip()
+
+
+def build_input_ids(tokenizer, prompt_text, reply_text):
+    return tokenizer(prompt_text + reply_text, return_tensors='pt')['input_ids'][0].tolist()
 
 def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
     inst["question"] = inst[args.question_col]
@@ -65,7 +82,8 @@ def generate_replies(inst, prompt, args, model, tokenizer, generation_config):
             tokenizer=tokenizer,
         )
     reply = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
-    inst["input_ids"] = outputs[0]
+    reply = clean_assistant_channel_artifacts(reply)
+    inst["input_ids"] = build_input_ids(tokenizer, question, reply)
     inst["reply"] = reply
     return inst
 
@@ -228,13 +246,14 @@ def main(args):
         outputs = llm.generate(prompts, sampling_params)
 
         new_dataset = []
-        for data, output in zip(dataset, outputs):
+        for data, prompt_text, output in zip(dataset, prompts, outputs):
             for gen in output.outputs:
+                reply = clean_assistant_channel_artifacts(gen.text)
                 new_data_point = data.copy()
                 new_data_point["question"] = data[args.question_col]
                 new_data_point["answer"] = data[args.answer_col]
-                new_data_point["input_ids"] = list(output.prompt_token_ids) + list(gen.token_ids)
-                new_data_point["reply"] = gen.text
+                new_data_point["input_ids"] = build_input_ids(tokenizer, prompt_text, reply)
+                new_data_point["reply"] = reply
                 new_dataset.append(new_data_point)
         # Convert list of dicts to HuggingFace Dataset
         dataset = Dataset.from_dict({k: [d[k] for d in new_dataset] for k in new_dataset[0]})

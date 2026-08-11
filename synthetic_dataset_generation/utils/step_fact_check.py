@@ -308,6 +308,8 @@ class StepFactCheck(GenerationMetric):
             label_type: str = 'correctness',
             base_url: str = None,
             debug: bool = False,
+            strict: bool = False,
+            max_json_repair_attempts: int = 2,
     ):
         super().__init__(["input_texts", "claims"], "claim")
 
@@ -342,6 +344,8 @@ class StepFactCheck(GenerationMetric):
         self.n_threads = n_threads
         self.version = version
         self.debug = debug
+        self.strict = strict
+        self.max_json_repair_attempts = max_json_repair_attempts
 
     def __str__(self):
         return "StepFactCheck" + "_" + self.label_type
@@ -382,35 +386,183 @@ class StepFactCheck(GenerationMetric):
             log.warning('Skipping text, because could not parse DeepSeek reply: {}'.format(orig_reply))
             return None
 
+    @staticmethod
+    def parse_json_reply(reply: str) -> dict:
+        reply = reply.strip()
+        if "```" in reply:
+            for part in reply.split("```"):
+                part = part.strip()
+                if part.lower().startswith("json"):
+                    part = part[len("json"):].strip()
+                if part.startswith("{") and part.endswith("}"):
+                    return json.loads(part)
+
+        start = reply.find("{")
+        end = reply.rfind("}")
+        if start != -1 and end != -1 and start < end:
+            reply = reply[start:end + 1]
+        return json.loads(reply)
+
+    @staticmethod
+    def normalize_binary_labels(labels: list, name: str) -> list[int]:
+        if not isinstance(labels, list):
+            raise ValueError(f'{name} must be a list, got {type(labels).__name__}')
+
+        normalized = []
+        for idx, label in enumerate(labels):
+            if isinstance(label, str):
+                label = label.strip()
+                if label not in {'0', '1'}:
+                    raise ValueError(f'{name}[{idx}] must be 0/1, got {label!r}')
+                normalized.append(int(label))
+            elif isinstance(label, (int, float, np.integer, np.floating, bool)):
+                if isinstance(label, (float, np.floating)) and np.isnan(label):
+                    raise ValueError(f'{name}[{idx}] is NaN')
+                label = int(label)
+                if label not in (0, 1):
+                    raise ValueError(f'{name}[{idx}] must be 0/1, got {label!r}')
+                normalized.append(label)
+            else:
+                raise ValueError(f'{name}[{idx}] must be 0/1, got {type(label).__name__}')
+        return normalized
+
+    @classmethod
+    def validate_json_labels(cls, json_reply: dict, n_claims: int) -> tuple[list[int], list[int | float]]:
+        if not isinstance(json_reply, dict):
+            raise ValueError(f'expected JSON object, got {type(json_reply).__name__}')
+        if 'correctness' not in json_reply:
+            raise ValueError('missing "correctness" field')
+        if 'informativeness' not in json_reply:
+            raise ValueError('missing "informativeness" field')
+
+        correctness_labels = cls.normalize_binary_labels(json_reply['correctness'], 'correctness')
+        informativeness_labels = cls.normalize_binary_labels(json_reply['informativeness'], 'informativeness')
+
+        if len(correctness_labels) != n_claims:
+            raise ValueError(f'correctness length mismatch: expected {n_claims}, got {len(correctness_labels)}')
+
+        if len(informativeness_labels) == n_claims - 1:
+            informativeness_labels = informativeness_labels + [np.nan]
+        elif len(informativeness_labels) != n_claims:
+            raise ValueError(
+                f'informativeness length mismatch: expected {n_claims - 1} or {n_claims}, '
+                f'got {len(informativeness_labels)}'
+            )
+
+        return correctness_labels, informativeness_labels
+
+    def prompt2_repair(
+            self,
+            input_text: str,
+            claims: list[Claim],
+            answer: str,
+            assessment_reply: str,
+            invalid_reply: str,
+            error: str,
+    ) -> str:
+        problem = self.parse_problem(input_text)
+        steps = [f"{i + 1}. {cl.claim_text.strip()}" for i, cl in enumerate(claims)]
+        return f'''
+The previous JSON labeling output was invalid.
+
+Validation error:
+{error}
+
+Return a replacement JSON object only, with exactly these fields:
+- "correctness": exactly {len(steps)} integers, each 0 or 1, one per numbered item 1 through {len(steps)} including the final answer item.
+- "informativeness": exactly {len(steps) - 1} integers, each 0 or 1, one per numbered item 1 through {len(steps) - 1}; do not include the final answer item.
+
+Do not summarize ranges. Do not omit items even if all labels are identical. If all items are correct or informative, output a full-length list of 1s.
+
+PROBLEM:
+{problem}
+
+GROUND-TRUTH SOLUTION:
+{answer}
+
+NUMBERED STUDENT ITEMS:
+{steps}
+
+ASSESSMENT OF STUDENT SOLUTION ITEMS:
+{assessment_reply}
+
+INVALID JSON OUTPUT TO REPLACE:
+{invalid_reply}
+
+OUTPUT ONLY VALID JSON:
+'''
+
+    def ask_chat(self, message: str, json_output: bool = False) -> tuple[str, str]:
+        response_tuple = self.chat.ask(message, json_output=json_output)
+        if isinstance(response_tuple, tuple):
+            return response_tuple
+        return response_tuple, ""
+
+    def invalid_labels(self, message: str, claims: list[Claim]) -> list[float]:
+        if self.strict:
+            raise ValueError(message)
+        log.warning(message)
+        return [np.nan for _ in range(len(claims))]
+
+    def json_labels_with_repair(
+            self,
+            input_text: str,
+            claims: list[Claim],
+            answer: str,
+            assessment_reply: str,
+            reply: str,
+    ) -> tuple[list[int], list[int | float]] | tuple[None, None]:
+        last_reply = reply
+        last_error = None
+        for attempt in range(self.max_json_repair_attempts + 1):
+            try:
+                return self.validate_json_labels(self.parse_json_reply(last_reply), len(claims))
+            except Exception as e:
+                last_error = str(e)
+                if attempt == self.max_json_repair_attempts:
+                    break
+                repair_prompt = self.prompt2_repair(
+                    input_text=input_text,
+                    claims=claims,
+                    answer=answer,
+                    assessment_reply=assessment_reply,
+                    invalid_reply=last_reply,
+                    error=last_error,
+                )
+                last_reply, _ = self.ask_chat(repair_prompt, json_output=True)
+
+        message = (
+            'Skipping text, because could not get valid verifier JSON after repair: '
+            f'{last_error}. Last reply: {last_reply}'
+        )
+        if self.strict:
+            raise ValueError(message)
+        log.warning(message)
+        return None, None
+
     def _score_single(self, args: tuple[list, str, str]) -> list:
         claims, input_text, answer = args
         q1 = self.prompt1(input_text, claims, answer)
-        response_tuple = self.chat.ask(q1, json_output=False)
-        if isinstance(response_tuple, tuple):
-            reply, reasoning_content = response_tuple
-        else:
-            reply, reasoning_content = response_tuple, ""
+        assessment_reply, reasoning_content = self.ask_chat(q1, json_output=False)
         if self.debug:
             print(q1)
             print("=================")
             print(f"Reasoning content Step 1: {reasoning_content}")
-        q2 = self.prompt2(input_text, claims, answer, reply)
-        response_tuple = self.chat.ask(q2, json_output=self.json_output)
-        if isinstance(response_tuple, tuple):
-            reply, reasoning_content = response_tuple
-        else:
-            reply, reasoning_content = response_tuple, ""
+        q2 = self.prompt2(input_text, claims, answer, assessment_reply)
+        reply, reasoning_content = self.ask_chat(q2, json_output=self.json_output)
         if self.debug:
             print(q2)
             print("=================")
             print(f"Reasoning content Step 2: {reasoning_content}")
         if self.json_output:
-            try:
-                json_reply = json.loads(reply)
-                correctness_labels = json_reply['correctness']
-                informativeness_labels = json_reply['informativeness']
-            except Exception as e:
-                log.warning(f"Skipping text, because could not parse DeepSeek reply: {reply}")
+            correctness_labels, informativeness_labels = self.json_labels_with_repair(
+                input_text=input_text,
+                claims=claims,
+                answer=answer,
+                assessment_reply=assessment_reply,
+                reply=reply,
+            )
+            if correctness_labels is None:
                 return [np.nan for _ in range(len(claims))]
         else:
             correctness_labels: list[int] | None = self.parse_reply(reply)
@@ -424,17 +576,17 @@ class StepFactCheck(GenerationMetric):
             raise ValueError(f"Label type {self.label_type} not supported")
 
         if claim_labels is None:
-            return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
+            return self.invalid_labels('Skipping text, because verifier returned no labels', claims)
         if len(claim_labels) + 1 == len(claims):
             claim_labels.append(np.nan)  # last answer is undefined
         if len(claim_labels) != len(claims):
-            log.warning(f"Prompt 2: {q2}")
-            log.warning(
-                'Skipping text, because of inconsistend number of '
-                'labels in DeepSeek reply: expected {}, got {}'.format(len(claims), reply))
-            return [np.nan for _ in range(len(claims))]  # will be skipped at evaluation
-        
-        return [
+            return self.invalid_labels(
+                'Skipping text, because of inconsistent number of labels in verifier reply: '
+                f'expected {len(claims)}, got {len(claim_labels)}. Reply: {reply}',
+                claims,
+            )
+
+        labels = [
             (
                 np.nan if (len(claims[i].aligned_token_ids) == 0 or
                           (isinstance(claim_labels[i], (int, float)) and np.isnan(claim_labels[i]))) else
@@ -442,6 +594,9 @@ class StepFactCheck(GenerationMetric):
                 0
             ) for i in range(len(claims))
         ]
+        if self.strict and not any(not (isinstance(label, (float, np.floating)) and np.isnan(label)) for label in labels):
+            raise ValueError(f'All verifier labels are NaN after token alignment for problem: {input_text[:200]}')
+        return labels
 
     def __call__(
             self,

@@ -180,7 +180,7 @@ def load_data(config, tokenizer):
         log.info("Performing train-test split...")
         tokenized_data = tokenized_data.train_test_split(
             test_size=config.dataset.test_size,
-            seed=42,
+            seed=int(getattr(config, "seed", 42)),
         )
 
     else:
@@ -241,7 +241,7 @@ def load_additional_test_datasets(config, tokenizer):
             log.info("Performing train-test split...")
             dataset_test = dataset['train'].train_test_split(
                 test_size=config.dataset.test_size,
-                seed=42,
+                seed=int(getattr(config, "seed", 42)),
             )['test']
         dataset_test = dataset_test.map(prompt_tokens)
         additional_datasets[name] = dataset_test
@@ -582,6 +582,11 @@ class TrainerCustom(Trainer):
           - per-additional-dataset:      eval_<ds_name>_<metric>
           - means (all sets):            eval_mean_<metric>
         """
+        original_claim_num_upper_bound = None
+        if hasattr(self.data_collator, "claim_num_upper_bound"):
+            original_claim_num_upper_bound = self.data_collator.claim_num_upper_bound
+            self.data_collator.claim_num_upper_bound = -1
+
         callbacks_to_remove = []
         for callback in self.callback_handler.callbacks:
             if isinstance(callback, EarlyStoppingCallback):
@@ -656,6 +661,9 @@ class TrainerCustom(Trainer):
             self.log(mean_results)
 
         finally:
+            if original_claim_num_upper_bound is not None:
+                self.data_collator.claim_num_upper_bound = original_claim_num_upper_bound
+
             # Restore the callbacks we temporarily removed
             for callback in callbacks_to_remove:
                 self.callback_handler.callbacks.append(callback)
@@ -715,7 +723,7 @@ def main(config):
 
     hf_logger.info("Init transformers logger.")
 
-    random_seed = 42
+    random_seed = int(getattr(config, "seed", 42))
     random.seed(random_seed)
     torch.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
@@ -770,6 +778,7 @@ def main(config):
         gradient_accumulation_steps=config.training_arguments.gradient_accumulation_steps,
         eval_accumulation_steps=4,
         learning_rate=config.training_arguments.learning_rate,
+        seed=random_seed,
         weight_decay=config.training_arguments.weight_decay,
         max_grad_norm=config.training_arguments.max_grad_norm,
         warmup_ratio=config.training_arguments.warmup_ratio,
