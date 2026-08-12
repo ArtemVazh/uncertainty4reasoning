@@ -148,6 +148,13 @@ def parse_args():
     parser.add_argument('--top-k', type=int, default=50, help='Top-k for the model')
     parser.add_argument('--n-samples-per-input', type=int, default=3, help='Number of samples to generate')
     parser.add_argument('--tensor-parallel-size', type=int, default=-1, help='Number of tensor parallel GPUs')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for generation')
+    parser.add_argument('--gpu-memory-utilization', type=float, default=0.75,
+                        help='Fraction of GPU memory available to the vLLM engine')
+    parser.add_argument('--max-model-len', type=int, default=None,
+                        help='Maximum vLLM context length; use a smaller value to reduce KV-cache memory')
+    parser.add_argument('--language-model-only', action='store_true', default=False,
+                        help='Skip loading the vision tower for supported multimodal models')
     return parser.parse_args()
 
 def main(args):
@@ -196,9 +203,8 @@ def main(args):
         dataset = dataset.select(range(args.n_samples))
     else:
         dataset = dataset.select(range(len(dataset)))
-    generation_config = GenerationConfig.from_pretrained(args.model_path)
-
     if not args.vllm:
+        generation_config = GenerationConfig.from_pretrained(args.model_path)
         model = AutoModelForCausalLM.from_pretrained(
             args.model_path, device_map=args.device, trust_remote_code=True, cache_dir=args.hf_cache)
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, cache_dir=args.hf_cache)
@@ -223,25 +229,27 @@ def main(args):
             temperature=args.temperature,
             top_p=args.top_p,
             top_k=args.top_k,
-            seed=42,
+            seed=args.seed,
             max_tokens=args.max_new_tokens if args.max_new_tokens > 0 else None,
             repetition_penalty=1.,
             stop=get_stop_strings(tokenizer),
             include_stop_str_in_output=False,
         )
-        sampling_params.update_from_generation_config(generation_config.to_dict())
-        sampling_params.stop = get_stop_strings(tokenizer)
-        sampling_params.include_stop_str_in_output = False
-
-        llm = LLM(
+        llm_kwargs = dict(
             model=args.model_path,
             tensor_parallel_size=GPU_NUM if args.tensor_parallel_size < 0 else args.tensor_parallel_size,
             download_dir=args.hf_cache,
             tokenizer=args.model_path,
             dtype='auto',
             trust_remote_code=True,
-            gpu_memory_utilization=0.75,
+            gpu_memory_utilization=args.gpu_memory_utilization,
         )
+        if args.max_model_len is not None:
+            llm_kwargs["max_model_len"] = args.max_model_len
+        if args.language_model_only:
+            llm_kwargs["language_model_only"] = True
+
+        llm = LLM(**llm_kwargs)
 
         outputs = llm.generate(prompts, sampling_params)
 

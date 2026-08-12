@@ -105,6 +105,24 @@ def main(args):
     claims = claim_extractor(deps, dataset["question"], model=Namespace(tokenizer=tokenizer))["claims"]
     print("Done.")
 
+    if args.max_claims is not None:
+        if args.max_claims <= 0:
+            raise ValueError("--max-claims must be a positive integer")
+        keep_indices = [idx for idx, row in enumerate(claims) if len(row) <= args.max_claims]
+        dropped_indices = [idx for idx, row in enumerate(claims) if len(row) > args.max_claims]
+        if dropped_indices:
+            preview = dropped_indices[:20]
+            suffix = "..." if len(dropped_indices) > len(preview) else ""
+            print(
+                f"Dropping {len(dropped_indices)} examples with more than "
+                f"{args.max_claims} claims: {preview}{suffix}"
+            )
+            if not keep_indices:
+                raise ValueError("All examples were removed by --max-claims")
+            dataset = dataset.select(keep_indices)
+            greedy_tokens = [greedy_tokens[idx] for idx in keep_indices]
+            claims = [claims[idx] for idx in keep_indices]
+
     print("Verifying claims...")
     if any(x in args.dataset_path for x in ['gsm8k', 'math', 'proofnet','natural_plan']):
         stats = {"input_texts": dataset["question"], "claims": claims, "answers": dataset["answer"]}
@@ -221,6 +239,12 @@ if __name__ == '__main__':
     parser.add_argument("--start-idx", type=int, default=0, help="The starting index (offset) in the dataset to begin processing. Use this to skip already processed samples.")
     parser.add_argument("--sample", type=int, default=-1, help="Sampling for debugging.")
     parser.add_argument("--api-cache", type=str, default=None, help="Cache directory for API calls.")
+    parser.add_argument(
+        "--max-claims",
+        type=int,
+        default=None,
+        help="Drop examples with more than this many extracted claims before verification.",
+    )
 
     args = parser.parse_args()
     main(args)
