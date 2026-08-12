@@ -306,8 +306,17 @@ class VLLMStepReasoningCollator:
       - verified: FloatTensor[B, max_claims] padded with -100
     """
 
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, claim_num_upper_bound: int = -1, sample_claims: bool = False):
         self.tokenizer = tokenizer
+        self.claim_num_upper_bound = int(claim_num_upper_bound)
+        self.sample_claims = sample_claims
+
+    def _claim_indices(self, num_claims: int) -> list[int]:
+        if self.claim_num_upper_bound <= 0 or num_claims <= self.claim_num_upper_bound:
+            return list(range(num_claims))
+        if self.sample_claims:
+            return sorted(random.sample(range(num_claims), self.claim_num_upper_bound))
+        return list(range(self.claim_num_upper_bound))
 
     def _adjust_claim_positions(self, context_length: int, input_ids: list[int], claim_obj: dict) -> torch.Tensor:
         claim_token_positions = claim_obj["aligned_token_ids"]
@@ -334,8 +343,17 @@ class VLLMStepReasoningCollator:
 
             input_ids_list.append(input_ids)
 
+            raw_claims = list(e["claims"])
+            raw_verified = list(e["verified"])
+            if len(raw_claims) != len(raw_verified):
+                raise ValueError(
+                    f"claims/verified length mismatch: {len(raw_claims)} != {len(raw_verified)}"
+                )
+            claim_indices = self._claim_indices(len(raw_claims))
+
             instance_claims = []
-            for claim in e["claims"]:
+            for claim_idx in claim_indices:
+                claim = raw_claims[claim_idx]
                 mask = torch.zeros(full_len, dtype=torch.long)
                 claim_positions = self._adjust_claim_positions(context_length, input_ids, claim)
                 if len(claim_positions) > 0:
@@ -349,7 +367,11 @@ class VLLMStepReasoningCollator:
                 claim_tensor = torch.stack(instance_claims, dim=0)
             claims_list.append(claim_tensor)
 
-            verified = [(-100.0 if (isinstance(v, float) and np.isnan(v)) else float(v)) for v in e["verified"]]
+            verified = [
+                -100.0 if (isinstance(raw_verified[i], float) and np.isnan(raw_verified[i]))
+                else float(raw_verified[i])
+                for i in claim_indices
+            ]
             verified_rows.append(verified)
 
         max_claims = max((len(v) for v in verified_rows), default=0)
@@ -762,6 +784,10 @@ def evaluate_model(model: VLLMTrainableUncertaintyModel, dataloader: DataLoader,
             all_logits.append(logits_np[mask_np].astype(np.float32, copy=False))
             all_labels.append(labels_np[mask_np].astype(np.float32, copy=False))
 
+        del loss, logits, labels
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     logits = np.concatenate(all_logits, axis=0) if all_logits else np.zeros((0,), dtype=np.float32)
     labels = np.concatenate(all_labels, axis=0) if all_labels else np.zeros((0,), dtype=np.float32)
 
@@ -937,13 +963,24 @@ def save_metrics(path: Path, metrics: dict[str, Any]):
 
 
 def build_dataloaders(config, tokenized_data, additional_test_datasets, tokenizer):
-    collator = VLLMStepReasoningCollator(tokenizer)
+    claim_cap = int(getattr(config.ue_layer, "claim_num_upper_bound", -1) or -1)
+    train_collator = VLLMStepReasoningCollator(
+        tokenizer,
+        claim_num_upper_bound=claim_cap,
+        sample_claims=True,
+    )
+    eval_collator = VLLMStepReasoningCollator(
+        tokenizer,
+        claim_num_upper_bound=claim_cap,
+        sample_claims=False,
+    )
+    log.info("Using claim cap %d for vLLM train/eval batches", claim_cap)
     train_loader = DataLoader(
         tokenized_data["train"],
         batch_size=config.training_arguments.per_device_train_batch_size,
         shuffle=True,
         num_workers=0,
-        collate_fn=collator,
+        collate_fn=train_collator,
         pin_memory=torch.cuda.is_available(),
     )
     eval_loader = DataLoader(
@@ -955,7 +992,7 @@ def build_dataloaders(config, tokenized_data, additional_test_datasets, tokenize
         ),
         shuffle=False,
         num_workers=0,
-        collate_fn=collator,
+        collate_fn=eval_collator,
         pin_memory=torch.cuda.is_available(),
     )
     extra_eval_loaders = {
@@ -968,7 +1005,7 @@ def build_dataloaders(config, tokenized_data, additional_test_datasets, tokenize
             ),
             shuffle=False,
             num_workers=0,
-            collate_fn=collator,
+            collate_fn=eval_collator,
             pin_memory=torch.cuda.is_available(),
         )
         for name, ds in additional_test_datasets.items()
@@ -1138,6 +1175,25 @@ def main(config):
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+
+            log.info("Saving pre-eval checkpoint for completed epoch %d", epoch + 1)
+            save_training_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                completed_epochs=epoch + 1,
+                global_step=global_step,
+                best_metric=best_metric,
+                no_improve_epochs=no_improve_epochs,
+                history=history,
+            )
+            batch = None
+            loss = None
+            _ = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             metrics_by_name = {}
             main_eval = evaluate_model(model, eval_loader, desc="eval")
