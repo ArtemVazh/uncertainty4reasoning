@@ -90,16 +90,20 @@ class UncertaintyHeadClaim(UncertaintyHeadBase):
 
             if len(entity_mask) == 0:
                 continue
-            claim_chunk_size = self.claim_chunk_size or len(entity_mask)
+            # Chunking controls eval peak memory. During training, processing all selected
+            # claims together keeps the original fast backward path and avoids retaining a
+            # separate autograd graph for every chunk.
+            claim_chunk_size = self.claim_chunk_size if not self.training else None
+            claim_chunk_size = claim_chunk_size or len(entity_mask)
             claim_results = []
             for start in range(0, len(entity_mask), claim_chunk_size):
                 entity_mask_chunk = entity_mask[start:start + claim_chunk_size]
                 ent_embeds = self.entity_embedding(entity_mask_chunk)
 
-                out = features[i].unsqueeze(0).expand(ent_embeds.shape[0], -1, -1) + ent_embeds
-                src_key_pd = src_key_padding_mask[i].unsqueeze(0).expand(
-                    ent_embeds.shape[0], -1
-                ).clone()
+                out = features[i].unsqueeze(0).repeat(ent_embeds.shape[0], 1, 1) + ent_embeds
+                src_key_pd = src_key_padding_mask[i].unsqueeze(0).repeat(
+                    ent_embeds.shape[0], 1
+                )
 
                 assert entity_mask_chunk.shape == src_key_pd.shape
                 if self.mask_future_tokens:
