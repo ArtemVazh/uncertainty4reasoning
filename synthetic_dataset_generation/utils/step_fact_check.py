@@ -594,7 +594,10 @@ OUTPUT ONLY VALID JSON:
                 0
             ) for i in range(len(claims))
         ]
-        if self.strict and not any(not (isinstance(label, (float, np.floating)) and np.isnan(label)) for label in labels):
+        single_claim_informativeness = self.label_type == 'informativeness' and len(claims) == 1
+        if self.strict and not single_claim_informativeness and not any(
+                not (isinstance(label, (float, np.floating)) and np.isnan(label)) for label in labels
+        ):
             raise ValueError(f'All verifier labels are NaN after token alignment for problem: {input_text[:200]}')
         return labels
 
@@ -626,4 +629,3 @@ OUTPUT ONLY VALID JSON:
                     claim_labels.append(future.result())
 
         return claim_labels
-
