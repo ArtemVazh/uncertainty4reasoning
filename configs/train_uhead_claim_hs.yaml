@@ -28,6 +28,7 @@ dataset:
   path: hf:rediska0123/train_gsm8k_Qwen3-1.7B
   prompt_path: configs/qwen3_prompt_general.txt
   num_instances: 0
+  max_input_length: null
   test_size: 0.1
   validation: test
   label_key_claim: verified

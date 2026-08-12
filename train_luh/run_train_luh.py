@@ -228,6 +228,21 @@ def load_data(config, tokenizer):
     if config.dataset.num_instances:
         dataset["train"] = dataset["train"].select(range(config.dataset.num_instances))
 
+    max_input_length = getattr(config.dataset, "max_input_length", None)
+    if max_input_length is not None:
+        max_input_length = int(max_input_length)
+        if max_input_length <= 0:
+            raise ValueError("dataset.max_input_length must be a positive integer")
+        rows_before = {split: len(split_dataset) for split, split_dataset in dataset.items()}
+        dataset = dataset.filter(lambda inst: len(inst["input_ids"]) <= max_input_length)
+        rows_after = {split: len(split_dataset) for split, split_dataset in dataset.items()}
+        log.info(
+            "Filtered examples longer than %d tokens: %s -> %s",
+            max_input_length,
+            rows_before,
+            rows_after,
+        )
+
     tokenized_data = dataset["train"]
 
     if "test" not in dataset:
