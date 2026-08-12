@@ -113,3 +113,20 @@ class UncertaintyHeadClaim(UncertaintyHeadBase):
         padded_results = [F.pad(o, (0, 0, 0, max_entities_per_batch - o.shape[0]), value=-100) for o in results]
         
         return torch.stack(padded_results) if len(padded_results) else torch.zeros(0)
+
+    def forward_from_features(self, features, attention_mask, claims):
+        """Run the head on precomputed token features, bypassing the extractor."""
+        if features.ndim != 3:
+            raise ValueError(f"features must have shape [B, T, H], got {tuple(features.shape)}")
+        if attention_mask.shape != features.shape[:2]:
+            raise ValueError(
+                "attention_mask must match the first two feature dimensions, "
+                f"got {tuple(attention_mask.shape)} and {tuple(features.shape)}"
+            )
+        if len(claims) != features.shape[0]:
+            raise ValueError(
+                f"claims batch size {len(claims)} does not match features batch size {features.shape[0]}"
+            )
+        return self._compute_tensors(
+            {"claims": claims}, features, attention_mask
+        )

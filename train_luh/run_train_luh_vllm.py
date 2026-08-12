@@ -47,11 +47,57 @@ from luh.feature_extractors.combined import FeatureExtractorCombined
 from luh.utils import load_any_dataset
 
 try:
-    from speculators.data_generation.vllm_hidden_states_generator import VllmHiddenStatesGenerator
+    import inspect
+    from speculators.data_generation import vllm_hidden_states_generator as _hs_generator_module
+    from speculators.data_generation.vllm_hidden_states_generator import (
+        VllmHiddenStatesGenerator as _SpeculatorsVllmHiddenStatesGenerator,
+    )
 except Exception as e:
     raise ImportError(
         "This script requires speculators.data_generation.vllm_hidden_states_generator.VllmHiddenStatesGenerator"
     ) from e
+
+if "eos_token_id" not in inspect.signature(_hs_generator_module.Request).parameters:
+    _VLLM_REQUEST = _hs_generator_module.Request
+
+    def _request_without_legacy_eos(*args, **kwargs):
+        kwargs.pop("eos_token_id", None)
+        return _VLLM_REQUEST(*args, **kwargs)
+
+    _hs_generator_module.Request = _request_without_legacy_eos
+
+
+class VllmHiddenStatesGenerator(_SpeculatorsVllmHiddenStatesGenerator):
+    """Use local compatibility hooks with the current vLLM request/model APIs."""
+
+    def _create_vllm_config(self, *args, **kwargs):
+        original_model_config = _hs_generator_module.ModelConfig
+        original_scheduler_config = _hs_generator_module.SchedulerConfig
+
+        def language_model_config(*model_args, **model_kwargs):
+            model_kwargs.setdefault("language_model_only", True)
+            return original_model_config(*model_args, **model_kwargs)
+
+        def synchronous_scheduler_config(*scheduler_args, **scheduler_kwargs):
+            # speculators drives execute/sample/update synchronously itself.
+            # vLLM 0.19 otherwise enables AsyncScheduler automatically, which
+            # intermittently returns an empty capture for the next request.
+            scheduler_kwargs.setdefault("async_scheduling", False)
+            return original_scheduler_config(*scheduler_args, **scheduler_kwargs)
+
+        _hs_generator_module.ModelConfig = language_model_config
+        _hs_generator_module.SchedulerConfig = synchronous_scheduler_config
+        try:
+            vllm_config = super()._create_vllm_config(*args, **kwargs)
+        finally:
+            _hs_generator_module.ModelConfig = original_model_config
+
+            _hs_generator_module.SchedulerConfig = original_scheduler_config
+        vllm_config.parallel_config.worker_extension_cls = (
+            "train_luh.vllm_hidden_states_worker.HiddenStatesWorkerExtension"
+        )
+        return vllm_config
+
 
 transformers_logging.set_verbosity_info()
 transformers_logging.enable_default_handler()
@@ -977,18 +1023,22 @@ def main(config):
     additional_test_datasets = load_additional_test_datasets(config, tokenizer)
 
     uhead = build_uhead(config)
+    log.info("Initializing vLLM hidden-state provider")
     feature_provider = VLLMHiddenStateProvider(config, uhead)
+    log.info("vLLM hidden-state provider is ready")
     if os.environ.get("CUDNN_DETERMINISTIC", "0") == "1":
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    log.info("Moving uncertainty head to %s", train_device)
     model = VLLMTrainableUncertaintyModel(
         uhead=uhead,
         feature_provider=feature_provider,
         device=train_device,
         pos_weight=float(getattr(config.ue_layer, "pos_weight", 1.0)),
     )
+    log.info("Uncertainty head is ready on %s", train_device)
 
     train_loader, eval_loader, extra_eval_loaders = build_dataloaders(
         config,
@@ -997,11 +1047,13 @@ def main(config):
         tokenizer,
     )
 
+    log.info("Creating AdamW optimizer")
     optimizer = AdamW(
         model.uhead.parameters(),
         lr=float(config.training_arguments.learning_rate),
         weight_decay=float(config.training_arguments.weight_decay),
     )
+    log.info("AdamW optimizer is ready")
 
     num_epochs = int(config.training_arguments.num_train_epochs)
     grad_accum = int(getattr(config.training_arguments, "gradient_accumulation_steps", 1))
@@ -1056,6 +1108,8 @@ def main(config):
             pbar = tqdm(train_loader, desc=f"train epoch {epoch + 1}/{num_epochs}")
 
             for step, batch in enumerate(pbar, start=1):
+                if step == 1:
+                    log.info("Starting first hidden-state training batch")
                 loss, _, _, num_kept = model.forward_batch(batch)
 
                 if num_kept == 0:
