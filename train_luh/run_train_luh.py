@@ -581,6 +581,26 @@ class LoggerCallback(TrainerCallback):
             log.info(logs)
 
 
+class StopAfterEpochCallback(TrainerCallback):
+    """Stop cleanly after an epoch while preserving the full-run LR schedule."""
+
+    def __init__(self, stop_after_epoch):
+        self.stop_after_epoch = float(stop_after_epoch)
+        if self.stop_after_epoch <= 0:
+            raise ValueError("stop_after_epoch must be positive")
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        epoch = float(state.epoch or 0.0)
+        if epoch + 1e-9 >= self.stop_after_epoch:
+            log.info(
+                "Stopping cleanly after epoch %s (configured stop_after_epoch=%s).",
+                epoch,
+                self.stop_after_epoch,
+            )
+            control.should_training_stop = True
+        return control
+
+
 class UHeadOnlySaveCallback(TrainerCallback):
     """Custom callback to save only uncertainty heads instead of full model checkpoints."""
     
@@ -885,6 +905,9 @@ def main(config):
         data_collator = DataCollatorForLanguageModelingWithUncertainty(tokenizer, mlm=False)
 
     callbacks = [LoggerCallback()]
+    stop_after_epoch = getattr(config, "stop_after_epoch", None)
+    if stop_after_epoch is not None:
+        callbacks.append(StopAfterEpochCallback(stop_after_epoch))
     if config.do_save_checkpoints:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=3))
         callbacks.append(UHeadOnlySaveCallback())
