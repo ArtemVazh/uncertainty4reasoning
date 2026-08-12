@@ -2,9 +2,14 @@ import torch
 from collections.abc import Iterable
 
 
+def get_text_config(orig_base_model):
+    """Return the language config for both text-only and multimodal models."""
+    return getattr(orig_base_model.config, "text_config", orig_base_model.config)
+
+
 def get_layer_nums(layer_nums, orig_base_model):
     if layer_nums == 'all':
-        return list(range(orig_base_model.config.num_hidden_layers))
+        return list(range(get_text_config(orig_base_model).num_hidden_layers))
     elif isinstance(layer_nums, Iterable):
         return list(layer_nums)
     return (layer_nums,)

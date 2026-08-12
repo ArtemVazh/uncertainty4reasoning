@@ -37,6 +37,11 @@ from transformers import (
     set_seed,
 )
 from transformers import logging as transformers_logging
+try:
+    from transformers import AutoModelForMultimodalLM
+except ImportError:
+    AutoModelForMultimodalLM = None
+
 
 from causal_lm_with_uncertainty_layer import CausalLMWithUncertaintyLayer
 from causal_lm_with_uncertainty_layer_claim import CausalLMWithUncertaintyLayerClaim
@@ -58,6 +63,37 @@ log = logging.getLogger()
 hf_logger = logging.getLogger("transformers")
 
 
+def resolve_torch_dtype(value):
+    if value is None or isinstance(value, torch.dtype):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"Unsupported torch dtype: {value!r}")
+    if value == "auto":
+        return value
+
+    dtype_name = value.removeprefix("torch.")
+    dtype = getattr(torch, dtype_name, None)
+    if not isinstance(dtype, torch.dtype):
+        raise ValueError(
+            f"Unknown torch dtype {value!r}; use auto or a torch dtype such as torch.bfloat16"
+        )
+    return dtype
+
+
+def iter_base_model_configs(base_model):
+    """Yield both the outer config and an optional nested language config."""
+    outer_config = base_model.config
+    yield outer_config
+    text_config = getattr(outer_config, "text_config", None)
+    if text_config is not None and text_config is not outer_config:
+        yield text_config
+
+
+def set_base_model_config(base_model, name, value):
+    for model_config in iter_base_model_configs(base_model):
+        setattr(model_config, name, value)
+
+
 def load_tokenizer(config):
     tokenizer = AutoTokenizer.from_pretrained(
         config.model.pretrained_model_name_or_path,
@@ -71,7 +107,7 @@ def load_tokenizer(config):
 
 
 def load_model(config):
-    config.model.torch_dtype = globals().get(config.model.torch_dtype)
+    torch_dtype = resolve_torch_dtype(config.model.torch_dtype)
 
     log.info(f"Loading model {config.model.pretrained_model_name_or_path}...")
 
@@ -83,16 +119,34 @@ def load_model(config):
     else:
         device_map = config.model.device_map
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    loader_name = getattr(config.model, "loader", "causal_lm")
+    if loader_name == "causal_lm":
+        model_loader = AutoModelForCausalLM
+    elif loader_name == "multimodal":
+        if AutoModelForMultimodalLM is None:
+            raise ImportError(
+                "model.loader=multimodal requires a recent Transformers release with "
+                "AutoModelForMultimodalLM (install requirements-qwen36.txt)"
+            )
+        model_loader = AutoModelForMultimodalLM
+    else:
+        raise ValueError(
+            f"Unknown model.loader={loader_name!r}; "
+            "expected 'causal_lm' or 'multimodal'"
+        )
+
+    base_model = model_loader.from_pretrained(
         config.model.pretrained_model_name_or_path,
-        torch_dtype=config.model.torch_dtype,  # Use the configured dtype
+        torch_dtype=torch_dtype,
         trust_remote_code=True,
-        device_map=device_map,  # Use CPU for DeepSpeed, config device_map otherwise
-        low_cpu_mem_usage=True,  # Reduce CPU memory usage during loading
+        device_map=device_map,
+        low_cpu_mem_usage=True,
         cache_dir=getattr(config, 'hf_cache', None),
         token=getattr(config, 'hf_token', None),
     )
-    base_model.config.attn_implementation = "spda"
+    for parameter in base_model.parameters():
+        parameter.requires_grad = False
+
 
     # Do not enable gradient checkpointing when the base model is frozen (no parameters require gradients).
     # Enabling it in that case triggers the warning:
@@ -100,10 +154,10 @@ def load_model(config):
     if any(p.requires_grad for p in base_model.parameters()):
         if hasattr(base_model, "gradient_checkpointing_enable"):
             base_model.gradient_checkpointing_enable()
-        base_model.config.use_cache = False  # Disable KV cache when using checkpointing
+        set_base_model_config(base_model, "use_cache", False)
     else:
         # Keep cache enabled for faster inference since we're not using gradient checkpointing
-        base_model.config.use_cache = True
+        set_base_model_config(base_model, "use_cache", True)
 
     if config.ue_layer.path:
         uq_head = AutoUncertaintyHead.from_pretrained(config.ue_layer.path, base_model)
@@ -144,8 +198,8 @@ def load_model(config):
     # Ensure uncertainty head uses the same dtype as base model for mixed precision compatibility
     if hasattr(base_model, 'dtype'):
         model.ue_head = model.ue_head.to(dtype=base_model.dtype)
-    elif config.model.torch_dtype:
-        model.ue_head = model.ue_head.to(dtype=config.model.torch_dtype)
+    elif torch_dtype not in (None, "auto"):
+        model.ue_head = model.ue_head.to(dtype=torch_dtype)
 
     for name, param in model.named_parameters():
         if "ue_head" in name:
@@ -884,7 +938,7 @@ def main(config):
 
     else:
         if config.do_train:
-            trainer.model.orig_base_model.config.use_cache = False
+            set_base_model_config(trainer.model.orig_base_model, "use_cache", False)
 
             try:
                 trainer.train(ignore_keys_for_eval=["logits"])

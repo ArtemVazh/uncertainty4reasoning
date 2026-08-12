@@ -1,13 +1,13 @@
 import torch
 
 from .feature_extractor_base import FeatureExtractorBase
-from .utils import get_layer_nums
+from .utils import get_layer_nums, get_text_config
 
 
 class FeatureExtractorBasicHiddenStates(FeatureExtractorBase):
     def __init__(self, orig_base_model, layer_nums=[-1], **kwargs):
         self._layer_nums = get_layer_nums(layer_nums, orig_base_model)
-        self._feature_dim = orig_base_model.config.hidden_size * len(self._layer_nums)
+        self._feature_dim = get_text_config(orig_base_model).hidden_size * len(self._layer_nums)
 
     def __call__(self, llm_inputs, llm_outputs):
         """ output = (batch_size x output.sequences.shape[0] x hidden_state) """

@@ -1,6 +1,7 @@
 import torch
 
 from .feature_extractor_base import FeatureExtractorBase
+from .utils import get_text_config
 
 def _process_attn_nans(t):
     t[torch.isnan(t)] = 0
@@ -47,8 +48,9 @@ def process_attentions(attentions_all, attention_mask, is_training, stack_layers
 
 class FeatureExtractorLookbackLens(FeatureExtractorBase):
     def __init__(self, orig_base_model, **kwargs):
-        self._n_layers = orig_base_model.config.num_hidden_layers
-        self._n_heads = orig_base_model.config.num_attention_heads
+        text_config = get_text_config(orig_base_model)
+        self._n_layers = text_config.num_hidden_layers
+        self._n_heads = text_config.num_attention_heads
         self._input_size = self._n_layers * self._n_heads
 
         from transformers import AutoTokenizer

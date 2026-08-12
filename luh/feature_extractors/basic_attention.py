@@ -2,7 +2,7 @@ import torch
 
 from .feature_extractor_base import FeatureExtractorBase
 from .lookback_lens import process_attentions
-from .utils import get_layer_nums
+from .utils import get_layer_nums, get_text_config
 import logging
 import time
 
@@ -34,7 +34,7 @@ class FeatureExtractorBasicAttention(FeatureExtractorBase):
 
         self.pool = pool
         self._layer_nums = get_layer_nums(layer_nums, orig_base_model)
-        self._head_num = orig_base_model.config.num_attention_heads
+        self._head_num = get_text_config(orig_base_model).num_attention_heads
         self._input_size = (
             self._head_num * len(self._layer_nums)
             if not pool
